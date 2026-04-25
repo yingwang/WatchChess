@@ -241,7 +241,7 @@ fun GameScreen() {
                 board = board, selectedPos = selectedPos, legalMoves = legalMoves,
                 lastMove = lastMove, aiThinking = aiThinking, gameOverMsg = gameOverMsg,
                 onTap = { onTap(it) },
-                onLongPress = { if (!aiThinking) showMenu = !showMenu },
+                onLongPress = { showMenu = !showMenu },
                 onGameOverTap = { sounds.stopBgm(); screen = "menu" },
             )
             // Menu overlay
