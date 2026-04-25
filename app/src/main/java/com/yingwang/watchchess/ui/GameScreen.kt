@@ -71,10 +71,10 @@ private val LastMoveHighlight = Color(0x44FFCC00)
 private data class Difficulty(val name: String, val depth: Int, val timeMs: Long)
 
 private val DIFFICULTIES = listOf(
-    Difficulty("入门", depth = 2, timeMs = 1500),
-    Difficulty("初级", depth = 3, timeMs = 3000),
-    Difficulty("中级", depth = 4, timeMs = 5000),
-    Difficulty("高级", depth = 6, timeMs = 8000),
+    Difficulty("入门", depth = 3, timeMs = 2000),
+    Difficulty("初级", depth = 5, timeMs = 5000),
+    Difficulty("中级", depth = 6, timeMs = 8000),
+    Difficulty("高级", depth = 8, timeMs = 15000),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -169,7 +169,8 @@ fun GameScreen() {
     fun startGame(difficulty: Int) {
         diffIdx = difficulty
         val d = DIFFICULTIES[difficulty]
-        ai = ChessAI(maxDepth = d.depth, timeLimit = d.timeMs, quiescenceDepth = 2)
+        val qDepth = if (d.depth >= 6) 3 else 2
+        ai = ChessAI(maxDepth = d.depth, timeLimit = d.timeMs, quiescenceDepth = qDepth)
         board = Board.createInitialBoard()
         selectedPos = null; legalMoves = emptyList(); lastMove = null
         moveHistory = emptyList(); undoStack = emptyList()
