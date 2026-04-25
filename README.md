@@ -4,7 +4,7 @@ Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 
 <p align="center">
   <img src="screenshot_menu.png" width="200" alt="Menu" />
-  <img src="screenshot_game.png" width="200" alt="App Icon" />
+  <img src="screenshot_game.png" width="200" alt="Game Board" />
 </p>
 
 ## Features
