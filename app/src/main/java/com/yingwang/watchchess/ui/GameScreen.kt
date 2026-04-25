@@ -276,8 +276,6 @@ private fun MainMenu(onStart: (Int) -> Unit, selectedIdx: Int) {
             modifier = Modifier.padding(horizontal = 32.dp),
         ) {
             Text("象棋", color = Color(0xFFD4A960), fontSize = 22.sp)
-            Spacer(Modifier.height(4.dp))
-            Text("中国象棋", color = Color(0xFF8A7A5A), fontSize = 11.sp)
             Spacer(Modifier.height(14.dp))
             DIFFICULTIES.forEachIndexed { idx, diff ->
                 val label = diff.name
