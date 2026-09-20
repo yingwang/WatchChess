@@ -2,6 +2,6 @@
 <resources>
     <color name="ic_launcher_background">#D4A960</color>
     <color name="ic_launcher_foreground">#CC2222</color>
-    <!-- 自适应图标的底色。跟选中按钮同一支青瓷（GameScreen.kt 的 Celadon）。 -->
-    <color name="icon_celadon">#7FA8A0</color>
+    <!-- 自适应图标的底色。棋子那张图自己带白底，两边同色，接缝才看不出来。 -->
+    <color name="icon_bg">#FFFFFF</color>
 </resources>

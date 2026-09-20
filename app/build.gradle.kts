@@ -16,8 +16,8 @@ android {
         // Play 不再接受 targetSdk 34 的新应用，提交时会被退回，报 "Target SDK of
         // artifact is too low"。跟到 36。
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.0.2"
+        versionCode = 10
+        versionName = "1.0.3"
     }
 
     buildFeatures {
