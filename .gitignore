@@ -4,3 +4,11 @@ app/build/
 local.properties
 *.iml
 .idea/
+engine/pikafish.nnue
+engine/pikafish-*
+pikafish-bench.txt
+
+# 引擎产物不进仓库。皮卡鱼的网络文件有五十兆，二进制是本地交叉编译出来的，
+# 两样都靠 scripts/fetch-engine.sh 现取现编，源码与版本在那个脚本里写死。
+app/src/main/assets/pikafish.nnue
+app/src/main/jniLibs/*/libpikafish.so

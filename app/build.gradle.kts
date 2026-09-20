@@ -38,9 +38,19 @@ android {
         }
     }
 
+    // 网络文件五十兆，压缩了既拖慢安装又让 openFd 拿不到长度，索性原样放进包里。
+    androidResources {
+        noCompress += "nnue"
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // 引擎是要被 exec 的可执行文件，不是给 System.loadLibrary 加载的库，
+            // 必须让它在安装时落到磁盘上。
+            useLegacyPackaging = true
         }
     }
 }
@@ -54,4 +64,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    testImplementation("junit:junit:4.13.2")
 }

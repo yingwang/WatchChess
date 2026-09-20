@@ -35,7 +35,29 @@ candidates are ever highlighted, so an illegal move cannot be entered.
 
 ## AI Engine
 
-Pure Kotlin alpha-beta pruning with:
+Games are played by **Pikafish**, run as a static arm64 subprocess. The watch's
+Android userspace is 32-bit, but its kernel executes AArch64 binaries, so the
+engine ships as a fully static arm64 executable while the app itself stays
+32-bit. Two device quirks are worked around in code: `NumaPolicy` must be set
+to `none`, because this kernel has no NUMA sysfs and the engine's processor
+enumeration otherwise comes back empty and searches zero nodes; and the binary
+has to live in `jniLibs` with `extractNativeLibs` enabled, because API 29+
+forbids executing anything from the app's writable data directory.
+
+Difficulty caps **nodes**, not depth, so a level means the same playing strength
+on any CPU. The time limit is only a backstop so a move cannot cook the watch.
+
+Run `scripts/fetch-engine.sh` before building - it cross-compiles the engine and
+downloads the matching network. Neither artefact is committed.
+
+> **Licensing.** Pikafish derives from Stockfish and is GPL-3. The binary is not
+> in this repository, so the repository itself is unaffected. But distributing an
+> APK that contains it - publishing, or just handing the file to someone - puts
+> that distribution under GPL-3, which would require relicensing this app and
+> offering its source. Settle that before shipping a build.
+
+The original engine is kept as a fallback and answers whenever Pikafish fails to
+start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
 - Iterative deepening & aspiration windows
 - Transposition tables (Zobrist hashing)
 - Null move pruning & late move reductions

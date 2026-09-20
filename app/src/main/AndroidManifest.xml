@@ -4,8 +4,14 @@
     <uses-feature android:name="android.hardware.type.watch" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+      extractNativeLibs 必须开着。引擎是一个真正的可执行文件，要能被 exec 才有用，
+      而安卓从 API 29 起不准从应用可写的数据目录里执行文件，只有安装时释放到
+      lib 目录下的那一份还能跑。默认的不解压直读方式在包里没有落地文件，exec 不了。
+    -->
     <application
         android:allowBackup="true"
+        android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

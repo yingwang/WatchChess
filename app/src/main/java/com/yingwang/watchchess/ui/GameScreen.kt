@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.util.Log
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -57,6 +58,7 @@ import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Text
 import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
+import com.yingwang.watchchess.ai.PikafishEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.yingwang.watchchess.model.*
@@ -81,13 +83,25 @@ private const val ROTARY_STEP = 45f
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
-private data class Difficulty(val name: String, val depth: Int, val timeMs: Long)
+/**
+ * 一档难度要同时配两套参数，因为下棋的可能是两个引擎。
+ *
+ * 皮卡鱼那边用结点数封顶。结点数与机器快慢无关，同一档在哪台机器上都是同样的棋力，
+ * 时间上限只是兜底，免得一步棋想太久把表烤热。内置那个 Kotlin 引擎则仍按深度与时限走，
+ * 它只在皮卡鱼起不来的时候顶上。
+ */
+private data class Difficulty(
+    val name: String,
+    val depth: Int,
+    val timeMs: Long,
+    val nodes: Long,
+)
 
 private val DIFFICULTIES = listOf(
-    Difficulty("入门", depth = 3, timeMs = 2000),
-    Difficulty("初级", depth = 5, timeMs = 5000),
-    Difficulty("中级", depth = 6, timeMs = 8000),
-    Difficulty("高级", depth = 8, timeMs = 15000),
+    Difficulty("入门", depth = 3, timeMs = 1500, nodes = 5_000),
+    Difficulty("初级", depth = 5, timeMs = 3000, nodes = 50_000),
+    Difficulty("中级", depth = 6, timeMs = 6000, nodes = 300_000),
+    Difficulty("高级", depth = 8, timeMs = 12000, nodes = 3_000_000),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -132,7 +146,10 @@ private class GameSounds(context: Context) {
     }
 
     var sfxOn = true
-    var bgmOn = true
+
+    // 背景音乐默认关着。下棋多半是在安静的场合，音乐要人主动去开才合理，
+    // 落子与吃子那两声留着，它们是操作反馈不是配乐。菜单里两个开关都在。
+    var bgmOn = false
 
     fun startBgm() { if (bgmOn) bgm?.start() }
     fun stopBgm() { bgm?.pause() }
@@ -162,7 +179,7 @@ fun GameScreen() {
     var elapsedSec by remember { mutableIntStateOf(0) }
     var moveCount by remember { mutableIntStateOf(0) }
     var showMenu by remember { mutableStateOf(false) }
-    var bgmOn by remember { mutableStateOf(true) }
+    var bgmOn by remember { mutableStateOf(false) }
     var sfxOn by remember { mutableStateOf(true) }
     var cursorIdx by remember { mutableIntStateOf(0) }
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
@@ -172,7 +189,16 @@ fun GameScreen() {
     val sounds = remember { GameSounds(context) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
-    DisposableEffect(Unit) { onDispose { sounds.release() } }
+    // 皮卡鱼跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
+    // 所以内置那个 Kotlin 引擎一直留着顶班，绝不让棋下不下去。
+    val pikafish = remember { PikafishEngine(context) }
+    var pikafishReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        pikafishReady = pikafish.start()
+        if (!pikafishReady) Log.w("WatchChess", "pikafish unavailable: ${pikafish.lastError}")
+    }
+
+    DisposableEffect(Unit) { onDispose { sounds.release(); pikafish.stop() } }
 
     // Timer
     LaunchedEffect(screen, gameOverMsg) {
@@ -204,7 +230,14 @@ fun GameScreen() {
         if (gameOverMsg != null) return
         aiThinking = true
         scope.launch {
-            val move = withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
+            val d = DIFFICULTIES[diffIdx]
+            val move = if (pikafishReady) {
+                pikafish.findBestMove(board, moveHistory, d.nodes, d.timeMs)
+                    // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
+                    ?: withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
+            } else {
+                withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
+            }
             if (move != null) {
                 undoStack = undoStack + Snapshot(board, move)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
