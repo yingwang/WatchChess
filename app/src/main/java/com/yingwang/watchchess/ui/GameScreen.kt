@@ -99,11 +99,19 @@ private data class Difficulty(
     val nodes: Long,
 )
 
+// 这四组数字是在表上量出来的，不是估的。中局局面下实测：
+//   五万结点  用时 1.4 秒  搜到第 11 层
+//   二十万结点 用时 5.9 秒  搜到第 16 层
+//   四十二万   用时 11.9 秒 仍是第 16 层
+// 可见两件事。一是原先给高级设的三百万结点从来没跑到过，十二秒只够四十二万，封顶的
+// 一直是时间不是结点；二是中级与高级都停在第 16 层，多花的六秒一层都没多搜，这两档
+// 其实一样强。2026-09-20 殿下也说偏慢。
+// 所以改成让结点数真正生效，时间只当兜底，四档按大约三到四倍递进，每档差两层上下。
 private val DIFFICULTIES = listOf(
-    Difficulty("入门", depth = 3, timeMs = 1500, nodes = 5_000),
-    Difficulty("初级", depth = 5, timeMs = 3000, nodes = 50_000),
-    Difficulty("中级", depth = 6, timeMs = 6000, nodes = 300_000),
-    Difficulty("高级", depth = 8, timeMs = 12000, nodes = 3_000_000),
+    Difficulty("入门", depth = 3, timeMs = 800, nodes = 2_000),
+    Difficulty("初级", depth = 5, timeMs = 1500, nodes = 20_000),
+    Difficulty("中级", depth = 6, timeMs = 3000, nodes = 80_000),
+    Difficulty("高级", depth = 8, timeMs = 7000, nodes = 250_000),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -201,14 +209,12 @@ fun GameScreen() {
     // 八十一兆不增长，宽裕得多，但开局才起、回菜单就放这个习惯留着不亏。
     val engine = remember { FairyEngine(context) }
     var engineReady by remember { mutableStateOf(false) }
-    LaunchedEffect(screen) {
-        if (screen == "game") {
-            engineReady = engine.start()
-            if (!engineReady) Log.w("WatchChess", "engine unavailable: ${engine.lastError}")
-        } else {
-            engine.stop()
-            engineReady = false
-        }
+    // 应用一打开就先把引擎热起来，别等到开局才启动。它启动加握手要一秒七，摆在开局
+    // 那一刻就正好压在第一步棋上，殿下 2026-09-20 说的「感觉有点偏慢」多半是这一下。
+    // 挑难度那几秒足够它准备好。现在它常驻也就八十多兆，表上还有五百多兆余量，扛得住。
+    LaunchedEffect(Unit) {
+        engineReady = engine.start()
+        if (!engineReady) Log.w("WatchChess", "engine unavailable: ${engine.lastError}")
     }
 
     DisposableEffect(Unit) { onDispose { sounds.release(); engine.stop() } }
