@@ -22,10 +22,16 @@ Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 
 | Action | Gesture |
 |--------|---------|
-| Select piece | Tap |
-| Move piece | Tap legal position (green dot) |
+| Move the highlight | Rotate the crown |
+| Confirm the highlight | Tap anywhere on screen |
+| Cancel a selection | Swipe right (back) |
 | Open menu | Long press |
 | Reset after game over | Tap anywhere |
+
+A move takes two taps: turn the crown to highlight one of your movable pieces and
+tap to lock it in, then turn again to highlight a destination and tap to play it.
+Tap position is never used, so no aiming is required on a 3 mm grid. Only legal
+candidates are ever highlighted, so an illegal move cannot be entered.
 
 ## AI Engine
 

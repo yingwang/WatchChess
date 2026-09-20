@@ -8,9 +8,11 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,14 +27,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -40,6 +47,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -54,6 +62,7 @@ import kotlinx.coroutines.withContext
 import com.yingwang.watchchess.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.atan2
 import kotlin.math.min
 
 // ── Colors ─────────────────────────────────────────────────────────────────
@@ -65,6 +74,10 @@ private val BlackPiece = Color(0xFF1A1A1A)
 private val SelectedRing = Color(0xFF00CC44)
 private val LegalDot = Color(0x8800CC44)
 private val LastMoveHighlight = Color(0x44FFCC00)
+private val CursorRing = Color(0xFF00FF66)
+
+// 表冠：累计到这个像素量算走一格。Pixel Watch 一个档位大约 60 到 70 像素。
+private const val ROTARY_STEP = 45f
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
@@ -151,6 +164,8 @@ fun GameScreen() {
     var showMenu by remember { mutableStateOf(false) }
     var bgmOn by remember { mutableStateOf(true) }
     var sfxOn by remember { mutableStateOf(true) }
+    var cursorIdx by remember { mutableIntStateOf(0) }
+    var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -232,6 +247,53 @@ fun GameScreen() {
         } else { selectedPos = null; legalMoves = emptyList() }
     }
 
+    // ── 表冠光标 ───────────────────────────────────────────────────────────
+    // 走一步棋分两段，两段都靠转表冠挑、点屏幕定。
+    // 第一段在「有合法着法的己方棋子」之间跳，用棋盘从上到下、从左到右的固定顺序，
+    // 固定顺序手才记得住要转多远。第二段在选中那只子的合法落点之间跳，按绕着它
+    // 转一圈的角度排，转起来像围着它看一遍。
+    // 因为两段的候选都只含合法项，这套操作里走不出一步违规的棋，也就不需要报错。
+    val movablePieces = remember(board, gameOverMsg, aiThinking) {
+        if (gameOverMsg != null || aiThinking || board.currentPlayer != PieceColor.RED) emptyList()
+        else board.getAllLegalMoves().map { it.from }.distinct()
+            .sortedWith(compareBy({ it.row }, { it.col }))
+    }
+    val destinations = remember(selectedPos, legalMoves) {
+        val from = selectedPos
+        if (from == null) emptyList()
+        else legalMoves.map { it.to }
+            .sortedBy { atan2((it.row - from.row).toFloat(), (it.col - from.col).toFloat()) }
+    }
+    val candidates = if (selectedPos == null) movablePieces else destinations
+    val cursorPos = candidates.getOrNull(cursorIdx.coerceIn(0, maxOf(0, candidates.size - 1)))
+
+    // 换了一段（选中、取消、落子、悔棋）就把光标拨回头一个
+    LaunchedEffect(selectedPos, board) { cursorIdx = 0; rotaryAcc = 0f }
+
+    fun onRotary(px: Float): Boolean {
+        if (aiThinking || gameOverMsg != null || showMenu) return false
+        val n = candidates.size
+        if (n == 0) return false
+        rotaryAcc += px
+        var stepped = false
+        while (rotaryAcc >= ROTARY_STEP) { rotaryAcc -= ROTARY_STEP; cursorIdx = (cursorIdx + 1) % n; stepped = true }
+        while (rotaryAcc <= -ROTARY_STEP) { rotaryAcc += ROTARY_STEP; cursorIdx = (cursorIdx - 1 + n) % n; stepped = true }
+        if (stepped) vibrate(context, 10)
+        return true
+    }
+
+    // 点屏幕任意一处等于确认当前亮着的那个。两段共用这一条规矩，不必记两套。
+    fun onConfirm() {
+        if (aiThinking || gameOverMsg != null) return
+        onTap(cursorPos ?: return)
+    }
+
+    // 右滑返回等于取消选中，退回挑子那一段
+    BackHandler(enabled = screen == "game" && (showMenu || selectedPos != null)) {
+        if (showMenu) showMenu = false
+        else { selectedPos = null; legalMoves = emptyList(); cursorIdx = 0; vibrate(context, 15) }
+    }
+
     if (screen == "menu") {
         MainMenu(onStart = { startGame(it) }, selectedIdx = diffIdx)
     } else {
@@ -240,7 +302,9 @@ fun GameScreen() {
             BoardCanvas(
                 board = board, selectedPos = selectedPos, legalMoves = legalMoves,
                 lastMove = lastMove, aiThinking = aiThinking, gameOverMsg = gameOverMsg,
-                onTap = { onTap(it) },
+                cursorPos = cursorPos, pickingDestination = selectedPos != null,
+                onConfirm = { onConfirm() },
+                onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
                 onGameOverTap = { sounds.stopBgm(); screen = "menu" },
             )
@@ -351,6 +415,7 @@ private fun MenuBtn(label: String, enabled: Boolean, onClick: () -> Unit) {
 
 // ── Board Canvas ───────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun BoardCanvas(
     board: Board,
@@ -359,27 +424,38 @@ private fun BoardCanvas(
     lastMove: Move?,
     aiThinking: Boolean,
     gameOverMsg: String?,
-    onTap: (Position) -> Unit,
+    cursorPos: Position?,
+    pickingDestination: Boolean,
+    onConfirm: () -> Unit,
+    onRotary: (Float) -> Boolean,
     onLongPress: () -> Unit,
     onGameOverTap: () -> Unit,
 ) {
+    // 表冠事件要有焦点才收得到
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    // pointerInput 的手势块只在 key 变化时重建，闭包会一直抓着旧的回调不放。
+    // 光标每转一下都在变，若把它当 key，手势检测器就得跟着反复重建。这里改用
+    // rememberUpdatedState 让手势块始终读到最新的回调，key 保持为 Unit。
+    val confirm by rememberUpdatedState(onConfirm)
+    val longPress by rememberUpdatedState(onLongPress)
+    val gameOverTap by rememberUpdatedState(onGameOverTap)
+    val overMsg by rememberUpdatedState(gameOverMsg)
+
     Canvas(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF2B1B0E))
-            .pointerInput(board, aiThinking, gameOverMsg) {
+            .onRotaryScrollEvent { onRotary(it.verticalScrollPixels) }
+            .focusRequester(focusRequester)
+            .focusable()
+            .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { offset ->
-                        if (gameOverMsg != null) { onGameOverTap(); return@detectTapGestures }
-                        val cell = cellForRound(size.width.toFloat(), size.height.toFloat())
-                        val bw = cell * 8f; val bh = cell * 9f
-                        val ox = (size.width - bw) / 2f; val oy = (size.height - bh) / 2f
-                        val col = ((offset.x - ox + cell / 2) / cell).toInt()
-                        val row = ((offset.y - oy + cell / 2) / cell).toInt()
-                        val pos = Position(row, col)
-                        if (pos.isValid()) onTap(pos)
-                    },
-                    onLongPress = { onLongPress() },
+                    // 点屏幕任意一处就是确认当前亮着的那个，位置不参与判断，
+                    // 所以不存在「点到了别的子」这种事，也不需要瞄准。
+                    onTap = { if (overMsg != null) gameOverTap() else confirm() },
+                    onLongPress = { longPress() },
                 )
             },
     ) {
@@ -392,6 +468,7 @@ private fun BoardCanvas(
         drawSelection(ox, oy, cell, selectedPos)
         drawLegalMoves(ox, oy, cell, legalMoves)
         drawPieces(ox, oy, cell, board)
+        drawCursor(ox, oy, cell, cursorPos, pickingDestination)
 
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
             drawCheckGlow(ox, oy, cell, board)
@@ -450,6 +527,22 @@ private fun DrawScope.drawLegalMoves(ox: Float, oy: Float, c: Float, moves: List
         val ctr = Offset(ox + m.to.col * c, oy + m.to.row * c)
         if (m.capturedPiece != null) drawCircle(SelectedRing, c * 0.47f, ctr, style = Stroke(2f))
         else drawCircle(LegalDot, c * 0.14f, ctr)
+    }
+}
+
+/**
+ * 表冠光标。画在棋子之上，好让被亮的那个子一眼看得出来。
+ * 挑子那一段画一圈粗环；挑落点那一段在绿点上再叠一个实心点，与旁边没被选中的
+ * 落点区分开。
+ */
+private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?, pickingDestination: Boolean) {
+    if (pos == null) return
+    val ctr = Offset(ox + pos.col * c, oy + pos.row * c)
+    if (pickingDestination) {
+        drawCircle(CursorRing, c * 0.20f, ctr)
+        drawCircle(CursorRing, c * 0.40f, ctr, style = Stroke(2.5f))
+    } else {
+        drawCircle(CursorRing, c * 0.52f, ctr, style = Stroke(3.5f))
     }
 }
 
