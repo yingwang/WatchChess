@@ -223,6 +223,9 @@ fun GameScreen() {
     // 引擎是死的，同一个局面会照原样再走一遍，两边来回推就卡住了，所以记下来让它换一着。
     // 只在本局有效，开新局清空。
     val playedFrom = remember { mutableMapOf<String, MutableSet<String>>() }
+    // 每走一步之后的局面，跟着法历史一一对应，所以悔棋时一起回退，不会数错。
+    // 用来数同一个局面出现过几次：第三次就按重复局面判和，这样一局棋不可能卡死在那儿。
+    var positionHistory by remember { mutableStateOf(listOf<String>()) }
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
@@ -266,14 +269,23 @@ fun GameScreen() {
         selectedPos = null; legalMoves = emptyList(); lastMove = null
         moveHistory = emptyList(); undoStack = emptyList()
         aiThinking = false; gameOverMsg = null; showMenu = false
-        playedFrom.clear()
+        playedFrom.clear(); positionHistory = emptyList()
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
     }
 
-    fun checkGameOver(b: Board): String? {
+    /**
+     * 这一局是不是已经结束了。
+     *
+     * 除了将死与困毙，还要数重复局面。原先根本没有这一条，所以两边只要来回推，
+     * 一局棋就永远走不完。殿下 2026-09-20 问的正是这个：「那不就一直卡在那儿了吗」。
+     * 同一个局面第三次出现就判和，这是象棋里通行的办法，也让死循环在规则上不可能发生。
+     */
+    fun checkGameOver(b: Board, history: List<String>): String? {
         if (b.isCheckmate()) return if (b.currentPlayer == PieceColor.RED) "黑胜" else "红胜"
         if (b.isStalemate()) return "和棋"
+        val key = b.toFen()
+        if (history.count { it == key } >= 3) return "和棋"
         return null
     }
 
@@ -283,9 +295,14 @@ fun GameScreen() {
         scope.launch {
             val d = DIFFICULTIES[diffIdx]
             val positionKey = board.toFen()
+            // 这个局面已经出现过几次。越是重现，越使劲去换一着：把「差多少算差不多好」
+            // 一次放宽六十，让候选池变大，好跳出循环。真跳不出去也不要紧，第三次重复
+            // 就按和棋收场了，卡不住。
+            val seenBefore = positionHistory.count { it == positionKey }
             val move = if (engineReady) {
                 engine.findBestMove(
-                    board, moveHistory, d.nodes, d.timeMs, d.spreadCp,
+                    board, moveHistory, d.nodes, d.timeMs,
+                    d.spreadCp + seenBefore * 60,
                     playedFrom[positionKey].orEmpty(),
                 )
                     // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
@@ -298,9 +315,10 @@ fun GameScreen() {
                 undoStack = undoStack + Snapshot(board, move)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
                 board = nb; lastMove = move; moveHistory = moveHistory + move
+                positionHistory = positionHistory + nb.toFen()
                 if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
                 else { sounds.playMove(); vibrate(context) }
-                gameOverMsg = checkGameOver(board)
+                gameOverMsg = checkGameOver(board, positionHistory)
                 if (gameOverMsg != null) vibrate(context, 100)
                 else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
             }
@@ -313,6 +331,7 @@ fun GameScreen() {
         val playerSnap = undoStack[undoStack.size - 2]
         board = playerSnap.board; board.currentPlayer = PieceColor.RED
         undoStack = undoStack.dropLast(2); moveHistory = moveHistory.dropLast(2)
+        positionHistory = positionHistory.dropLast(2)
         lastMove = moveHistory.lastOrNull(); selectedPos = null; legalMoves = emptyList()
         moveCount--; vibrate(context, 20); showMenu = false
     }
@@ -324,10 +343,11 @@ fun GameScreen() {
             undoStack = undoStack + Snapshot(board, moveToMake)
             val nb = board.makeMove(moveToMake); nb.currentPlayer = board.currentPlayer.opposite()
             board = nb; lastMove = moveToMake; moveHistory = moveHistory + moveToMake
+            positionHistory = positionHistory + nb.toFen()
             selectedPos = null; legalMoves = emptyList(); moveCount++
             if (moveToMake.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
             else { sounds.playMove(); vibrate(context) }
-            gameOverMsg = checkGameOver(board)
+            gameOverMsg = checkGameOver(board, positionHistory)
             if (gameOverMsg != null) { vibrate(context, 100) } else {
                 if (board.isInCheck(board.currentPlayer)) sounds.sayCheck()
                 aiMove()
@@ -402,6 +422,8 @@ fun GameScreen() {
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
                 menuShowing = showMenu,
                 captured = capturedPieces,
+                diffName = DIFFICULTIES[diffIdx].name,
+                elapsedSec = elapsedSec,
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
@@ -544,6 +566,8 @@ private fun BoardCanvas(
     pickingDestination: Boolean,
     menuShowing: Boolean,
     captured: List<Piece>,
+    diffName: String,
+    elapsedSec: Int,
     onConfirm: () -> Unit,
     onRotary: (Float) -> Boolean,
     onLongPress: () -> Unit,
@@ -597,10 +621,7 @@ private fun BoardCanvas(
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
             drawCheckGlow(ox, oy, cell, board)
 
-        if (aiThinking) {
-            // Small yellow dot at top center
-            drawCircle(Color(0xCCFFCC00), radius = 3.5f, center = Offset(size.width / 2, 10f))
-        }
+        drawStatusLines(cell, diffName, elapsedSec, aiThinking)
 
         if (gameOverMsg != null) drawGameOver(gameOverMsg, cell)
     }
@@ -717,6 +738,34 @@ private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>) {
             )
         }
     }
+}
+
+/**
+ * 棋盘上下那两道月牙里，上面写档位，下面写用时。
+ *
+ * 殿下 2026-09-20 问要不要把时间、步数、档位摆到盘外，问我挑哪两样。挑的是档位和时间。
+ * 档位是因为她那天下到一半问过「不知道是选的什么水平」，那说明这个信息本来就缺；
+ * 时间是她自己说最想看的。步数留在长按的菜单里，它不像前两样那样随时需要瞄一眼。
+ *
+ * 圆屏上下各只剩四十来像素，而且越往两边越窄，所以只写一行、居中、字压得小。
+ * 引擎思考时顺手把状态并进档位那一行，原先那个右上角的小黄点就不必了。
+ */
+private fun DrawScope.drawStatusLines(c: Float, diffName: String, elapsedSec: Int, thinking: Boolean) {
+    val paint = android.graphics.Paint().apply {
+        textSize = c * 0.46f
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = Typeface.SANS_SERIF
+        isAntiAlias = true
+    }
+    val top = if (thinking) "$diffName · 思考中" else diffName
+    paint.color = if (thinking) 0xFFFFCC00.toInt() else 0xFF9A8A66.toInt()
+    drawContext.canvas.nativeCanvas.drawText(top, size.width / 2f, c * 0.92f, paint)
+
+    paint.color = 0xFF9A8A66.toInt()
+    drawContext.canvas.nativeCanvas.drawText(
+        "%d:%02d".format(elapsedSec / 60, elapsedSec % 60),
+        size.width / 2f, size.height - c * 0.44f, paint,
+    )
 }
 
 /**
