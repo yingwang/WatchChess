@@ -32,6 +32,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -276,6 +277,8 @@ fun GameScreen() {
     val searches = remember { GameSearchSession() }
     val sounds = remember { GameSounds(context) }
     val prefs = remember { context.getSharedPreferences("watchchess", Context.MODE_PRIVATE) }
+    var saveReady by remember { mutableStateOf(false) }
+    var lastSaved by remember { mutableStateOf(prefs.getString("saved_game_v1", null)) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
     // 引擎跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
@@ -388,13 +391,20 @@ fun GameScreen() {
     }
 
     fun undo() {
-        if (aiThinking || undoStack.size < 2) return
-        val playerSnap = undoStack[undoStack.size - 2]
-        board = playerSnap.board; board.currentPlayer = playerColor
-        undoStack = undoStack.dropLast(2); moveHistory = moveHistory.dropLast(2)
-        positionHistory = positionHistory.dropLast(2)
+        if (aiThinking) return
+        val keep = undoHistorySize(moveHistory, playerColor) ?: return
+        searches.invalidate()
+        board = undoStack[keep].board
+        undoStack = undoStack.take(keep); moveHistory = moveHistory.take(keep)
+        positionHistory = positionHistory.take(keep + 1)
+        gameOverMsg = null
+        playedFrom.clear()
+        undoStack.filter { it.move.piece.color != playerColor }.forEach {
+            playedFrom.getOrPut(it.board.toFen()) { mutableSetOf() }.add(it.move.toUci())
+        }
         lastMove = moveHistory.lastOrNull(); selectedPos = null; legalMoves = emptyList()
-        moveCount--; vibrate(context, 20); showMenu = false
+        moveCount = moveHistory.count { it.piece.color == playerColor }
+        vibrate(context, 20); showMenu = false
     }
 
     fun onTap(pos: Position) {
@@ -425,6 +435,46 @@ fun GameScreen() {
     // 所以那边只把计数加一，由这个效应接住。
     LaunchedEffect(aiMoveTrigger) {
         if (aiMoveTrigger > 0 && screen == "game" && board.currentPlayer != playerColor) aiMove()
+    }
+
+    LaunchedEffect(Unit) {
+        val saved = prefs.getString("saved_game_v1", null)?.let(SavedGame::decode)
+        if (saved != null) runCatching {
+            val replay = saved.replay()
+            diffIdx = saved.difficulty; playerColor = saved.side
+            val d = DIFFICULTIES[diffIdx]
+            ai = ChessAI(maxDepth = d.depth, timeLimit = d.timeMs, quiescenceDepth = if (d.depth >= 6) 3 else 2)
+            undoStack = replay.map { Snapshot(it.first, it.second) }
+            moveHistory = replay.map { it.second }
+            board = replay.lastOrNull()?.let { (before, move) ->
+                before.makeMove(move).also { it.currentPlayer = before.currentPlayer.opposite() }
+            } ?: Board.createInitialBoard()
+            positionHistory = replay.map { it.first.toFen() } + board.toFen()
+            lastMove = moveHistory.lastOrNull()
+            moveCount = moveHistory.count { it.piece.color == playerColor }
+            gameStartTime = saved.startedAt
+            gameOverMsg = saved.resultName.takeIf { it.isNotEmpty() }?.let {
+                context.resources.getIdentifier(it, "string", context.packageName).takeIf { id -> id != 0 }
+            }
+            replay.filter { it.second.piece.color != playerColor }.forEach { (before, move) ->
+                playedFrom.getOrPut(before.toFen()) { mutableSetOf() }.add(move.toUci())
+            }
+            screen = "game"; sounds.startBgm()
+            if (gameOverMsg == null && board.currentPlayer != playerColor) aiMoveTrigger++
+        }.onFailure { Log.w("WatchChess", "Saved game could not be restored", it) }
+        saveReady = true
+    }
+
+    SideEffect {
+        if (saveReady) {
+            val encoded = if (screen == "game") SavedGame(diffIdx, playerColor, gameStartTime,
+                gameOverMsg?.let { context.resources.getResourceEntryName(it) }.orEmpty(),
+                moveHistory.map { it.toUci() }).encode() else null
+            if (encoded != lastSaved) {
+                // 棋谱很小，只在落子、悔棋或退回菜单时写入，返回前确保磁盘已收到。
+                if (prefs.edit().putString("saved_game_v1", encoded).commit()) lastSaved = encoded
+            }
+        }
     }
 
     // ── 表冠光标 ───────────────────────────────────────────────────────────
@@ -520,7 +570,7 @@ fun GameScreen() {
                     diffName = stringResource(DIFFICULTIES[diffIdx].nameRes),
                     elapsedSec = elapsedSec,
                     moveCount = moveCount,
-                    canUndo = undoStack.size >= 2,
+                    canUndo = !aiThinking && undoHistorySize(moveHistory, playerColor) != null,
                     bgmOn = bgmOn,
                     sfxOn = sfxOn,
                     onToggleBgm = { bgmOn = sounds.toggleBgm() },
