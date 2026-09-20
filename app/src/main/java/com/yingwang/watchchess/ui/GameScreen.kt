@@ -62,6 +62,8 @@ import androidx.wear.compose.material.Text
 import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
 import com.yingwang.watchchess.ai.FairyEngine
+import com.yingwang.watchchess.ai.toFen
+import com.yingwang.watchchess.ai.toUci
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.yingwang.watchchess.model.*
@@ -100,7 +102,11 @@ private data class Difficulty(
     val depth: Int,
     val timeMs: Long,
     val nodes: Long,
-    /** 挑着法时容许比最优着差多少（百分兵）。放得越宽花样越多，棋也越松。 */
+    /**
+     * 挑着法时容许比最优着差多少（百分兵）。
+     * 主要是给「同一局面换一着」留出候选，不是拿来削弱棋力的，所以给得很窄。
+     * 真要让入门那档更好赢，往上调这个数就是，那是现成的旋钮。
+     */
     val spreadCp: Int,
 )
 
@@ -113,10 +119,10 @@ private data class Difficulty(
 // 其实一样强。2026-09-20 殿下也说偏慢。
 // 所以改成让结点数真正生效，时间只当兜底，四档按大约三到四倍递进，每档差两层上下。
 private val DIFFICULTIES = listOf(
-    Difficulty("入门", depth = 3, timeMs = 800, nodes = 2_000, spreadCp = 150),
-    Difficulty("初级", depth = 5, timeMs = 1500, nodes = 20_000, spreadCp = 70),
-    Difficulty("中级", depth = 6, timeMs = 3000, nodes = 80_000, spreadCp = 30),
-    Difficulty("高级", depth = 8, timeMs = 7000, nodes = 250_000, spreadCp = 10),
+    Difficulty("入门", depth = 3, timeMs = 800, nodes = 2_000, spreadCp = 60),
+    Difficulty("初级", depth = 5, timeMs = 1500, nodes = 20_000, spreadCp = 30),
+    Difficulty("中级", depth = 6, timeMs = 3000, nodes = 80_000, spreadCp = 15),
+    Difficulty("高级", depth = 8, timeMs = 7000, nodes = 250_000, spreadCp = 8),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -213,6 +219,10 @@ fun GameScreen() {
     var bgmOn by remember { mutableStateOf(true) }
     var sfxOn by remember { mutableStateOf(true) }
     var cursorIdx by remember { mutableIntStateOf(0) }
+    // 这一局里每个局面走过哪些着法。键是局面本身，值是从这个局面走出去过的着法。
+    // 引擎是死的，同一个局面会照原样再走一遍，两边来回推就卡住了，所以记下来让它换一着。
+    // 只在本局有效，开新局清空。
+    val playedFrom = remember { mutableMapOf<String, MutableSet<String>>() }
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
@@ -256,6 +266,7 @@ fun GameScreen() {
         selectedPos = null; legalMoves = emptyList(); lastMove = null
         moveHistory = emptyList(); undoStack = emptyList()
         aiThinking = false; gameOverMsg = null; showMenu = false
+        playedFrom.clear()
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
     }
@@ -271,14 +282,19 @@ fun GameScreen() {
         aiThinking = true
         scope.launch {
             val d = DIFFICULTIES[diffIdx]
+            val positionKey = board.toFen()
             val move = if (engineReady) {
-                engine.findBestMove(board, moveHistory, d.nodes, d.timeMs, d.spreadCp)
+                engine.findBestMove(
+                    board, moveHistory, d.nodes, d.timeMs, d.spreadCp,
+                    playedFrom[positionKey].orEmpty(),
+                )
                     // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
                     ?: withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
             } else {
                 withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
             }
             if (move != null) {
+                playedFrom.getOrPut(positionKey) { mutableSetOf() }.add(move.toUci())
                 undoStack = undoStack + Snapshot(board, move)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
                 board = nb; lastMove = move; moveHistory = moveHistory + move
