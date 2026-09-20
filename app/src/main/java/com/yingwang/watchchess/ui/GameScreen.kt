@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -75,8 +78,8 @@ private val RedPiece = Color(0xFFCC2222)
 private val BlackPiece = Color(0xFF1A1A1A)
 private val SelectedRing = Color(0xFF00CC44)
 private val LegalDot = Color(0x8800CC44)
-private val LastMoveHighlight = Color(0x44FFCC00)
 private val OpponentMoveColor = Color(0xFF1B6BFF)
+private val OwnMoveColor = Color(0xFF17A34A)
 private val CursorRing = Color(0xFF00FF66)
 
 // 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
@@ -118,9 +121,19 @@ private data class Snapshot(val board: Board, val move: Move)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * 一格多大。
+ *
+ * 圆屏上真正的限制不是棋盘的外框，而是四个角上的车会不会被圆边切掉。角上棋子的中心
+ * 离盘心是 sqrt(4^2 + 4.5^2) 约 6.02 格，棋子本身半径 0.43 格，所以只要
+ * (6.02 + 0.43) * 格宽 不超过半径，就一个子都不会缺。426 像素的屏幕半径 213，
+ * 算下来格宽上限约 33 像素，对应除数 12.9。取 13.0 留一点余量。
+ * 原先是 14.2，盘子偏小，四周空了一圈，殿下 2026-09-20 说「边上还有一点点空隙，
+ * 再铺满一点」。现在一格从 30 像素涨到约 32.8，整盘大了一成。
+ */
 private fun cellForRound(w: Float, h: Float): Float {
     val d = min(w, h)
-    return d / 14.2f
+    return d / 13.0f
 }
 
 private fun vibrate(context: Context, ms: Long = 30) {
@@ -355,6 +368,7 @@ fun GameScreen() {
                 board = board, selectedPos = selectedPos, legalMoves = legalMoves,
                 lastMove = lastMove, aiThinking = aiThinking, gameOverMsg = gameOverMsg,
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
+                menuShowing = showMenu,
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
@@ -425,6 +439,15 @@ private fun InGameMenu(
     onNewGame: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // 两行字加五个按钮竖着排，比这块圆屏高，最底下那个「继续」会被切掉，殿下
+    // 2026-09-20 说「最下面那个选项没有显示全」。圆屏上下还要各让出一块，可用的高度
+    // 比看上去更少。所以这里让它能滚，并且把表冠接上去滚，跟棋盘那边同一套手势。
+    // 上下各留一段空白，好让首尾两项都能滚到屏幕中间，不至于卡在圆边上。
+    val scrollState = rememberScrollState()
+    val menuFocus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { menuFocus.requestFocus() }
+
     Box(
         Modifier.fillMaxSize().background(Color(0xCC000000)).clickable { onDismiss() },
         contentAlignment = Alignment.Center,
@@ -432,7 +455,15 @@ private fun InGameMenu(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(5.dp),
-            modifier = Modifier.padding(horizontal = 40.dp),
+            modifier = Modifier
+                .onRotaryScrollEvent {
+                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
+                    true
+                }
+                .focusRequester(menuFocus)
+                .focusable()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 40.dp, vertical = 16.dp),
         ) {
             val min = elapsedSec / 60; val sec = elapsedSec % 60
             Text(diffName, color = Color(0xFFD4A960), fontSize = 13.sp)
@@ -478,14 +509,16 @@ private fun BoardCanvas(
     gameOverMsg: String?,
     cursorPos: Position?,
     pickingDestination: Boolean,
+    menuShowing: Boolean,
     onConfirm: () -> Unit,
     onRotary: (Float) -> Boolean,
     onLongPress: () -> Unit,
     onGameOverTap: () -> Unit,
 ) {
-    // 表冠事件要有焦点才收得到
+    // 表冠事件要有焦点才收得到。菜单打开时焦点会被菜单抢走，关掉之后必须抢回来，
+    // 否则棋盘上的表冠就此失灵，而且只有开过一次菜单的人才会碰到，最难查。
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    LaunchedEffect(menuShowing) { if (!menuShowing) focusRequester.requestFocus() }
 
     // pointerInput 的手势块只在 key 变化时重建，闭包会一直抓着旧的回调不放。
     // 光标每转一下都在变，若把它当 key，手势检测器就得跟着反复重建。这里改用
@@ -516,13 +549,14 @@ private fun BoardCanvas(
         val ox = (size.width - bw) / 2f; val oy = (size.height - bh) / 2f
 
         drawBoard(ox, oy, cell)
-        drawLastMove(ox, oy, cell, lastMove)
         drawSelection(ox, oy, cell, selectedPos)
         drawLegalMoves(ox, oy, cell, legalMoves)
         drawPieces(ox, oy, cell, board)
-        // 只标对方那一步，画在棋子上面才看得见。轮到自己之后这条线一直留着，
-        // 直到自己走完被自己的着法顶掉。
-        if (lastMove?.piece?.color == PieceColor.BLACK) drawOpponentMove(ox, oy, cell, lastMove)
+        // 标出刚走的那一步，画在棋子上面才看得见。对方是蓝的，自己是绿的。
+        lastMove?.let {
+            drawMoveMarker(ox, oy, cell, it,
+                if (it.piece.color == PieceColor.BLACK) OpponentMoveColor else OwnMoveColor)
+        }
         drawCursor(ox, oy, cell, cursorPos, pickingDestination)
 
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
@@ -601,30 +635,27 @@ private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?,
     }
 }
 
-private fun DrawScope.drawLastMove(ox: Float, oy: Float, c: Float, move: Move?) {
-    if (move == null) return
-    for (pos in listOf(move.from, move.to))
-        drawRect(LastMoveHighlight, Offset(ox + pos.col * c - c * 0.45f, oy + pos.row * c - c * 0.45f), Size(c * 0.9f, c * 0.9f))
-}
-
 /**
- * 对方刚走的那一步，画一条从起点到终点的箭杆。
+ * 刚走的那一步，起讫各画一个圈。
  *
  * 原先只在起讫两格底下铺一层淡黄，太轻了，殿下 2026-09-20 说「对方下什么子现在不是
  * 特别清楚显示」。表上格子只有三毫米，底色的深浅根本分辨不出来，得画出来。
  * 起初连起讫两点画了一根杆子，同日她说杆子多余，两个圈就够，遂去掉。
- * 用蓝色是因为盘上已经有红黑两色棋子、绿色的光标、黄色的上一步底色，蓝色是唯一还
- * 空着的、又跟这四样都不会混的颜色。
+ * 同日她又说自己走的那一步也该标出来，用绿圈，跟对方的蓝圈对称。原先自己那一步是在
+ * 两格底下铺一层半透明的黄色方块，她说「不太明显，而且不对称」，那层方块已经去掉。
+ *
+ * 绿色跟光标是同一族，但两者不会同时出现：轮到自己时盘上标的是对方刚走的那一步，
+ * 是蓝的；自己这一步的绿圈只在对方思考的那几秒里看得见，那时候光标是隐着的。
  */
-private fun DrawScope.drawOpponentMove(ox: Float, oy: Float, c: Float, move: Move?) {
+private fun DrawScope.drawMoveMarker(ox: Float, oy: Float, c: Float, move: Move?, color: Color) {
     if (move == null) return
     val a = Offset(ox + move.from.col * c, oy + move.from.row * c)
     val b = Offset(ox + move.to.col * c, oy + move.to.row * c)
 
     // 起点一个细圈，标明它原先在哪儿
-    drawCircle(OpponentMoveColor, c * 0.30f, a, style = Stroke(2.5f))
+    drawCircle(color, c * 0.30f, a, style = Stroke(2.5f))
     // 终点一个粗圈，这是它现在所在的位置
-    drawCircle(OpponentMoveColor, c * 0.50f, b, style = Stroke(3.5f))
+    drawCircle(color, c * 0.50f, b, style = Stroke(3.5f))
 }
 
 private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board) {
