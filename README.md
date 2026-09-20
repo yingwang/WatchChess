@@ -13,7 +13,6 @@ Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 
 - Full Chinese Chess board optimized for round watch displays
 - AI opponent with 4 difficulty levels, played by a bundled Fairy-Stockfish
-  engine, falling back to a built-in alpha-beta search if it cannot start
 - Crown-driven move entry, so nothing depends on hitting a 3 mm target
 - A how-to-play card on first launch, and from the in-game menu afterwards
 - Plays entirely offline: no account, no network, no data collected
@@ -59,11 +58,6 @@ from a pinned upstream revision and applies `scripts/fairy-adjudicate.patch`, wh
 adds the `watchresult` command the app uses to adjudicate repetitions. **A stock
 Fairy-Stockfish build will not work**: without that command every position reports
 as unadjudicable and the game stops with 裁决失败. The binary is not committed.
-
-> **Licensing.** This app is GPL-3, not MIT. Fairy-Stockfish derives from
-> Stockfish and is GPL-3, and a build that ships it has to be distributed under
-> the same terms, so the whole app follows. The source is public here, which is
-> what satisfies the obligation to offer it.
 
 The original engine is kept as a fallback and answers whenever Fairy-Stockfish
 fails to start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
@@ -124,3 +118,7 @@ Wear OS 中国象棋 — 在手腕上下棋。
 ./gradlew assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## 许可
+
+GPL-3。应用打包了 Fairy-Stockfish，它源自 Stockfish，按同样的条款分发。
