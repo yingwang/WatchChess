@@ -1,0 +1,1 @@
+Resume your previous game after restarting the app. Fixed undo after a game ends so you can continue playing.
