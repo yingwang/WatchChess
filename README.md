@@ -10,7 +10,11 @@ Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 ## Features
 
 - Full Chinese Chess board optimized for round watch displays
-- AI opponent with 4 difficulty levels (alpha-beta search with opening book)
+- AI opponent with 4 difficulty levels, played by a bundled Pikafish engine,
+  falling back to a built-in alpha-beta search if the engine cannot start
+- Crown-driven move entry, so nothing depends on hitting a 3 mm target
+- A how-to-play card on first launch, and from the in-game menu afterwards
+- Plays entirely offline: no account, no network, no data collected
 - Move & capture sound effects
 - Haptic feedback on every interaction
 - Game timer & move counter
