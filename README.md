@@ -47,8 +47,11 @@ forbids executing anything from the app's writable data directory.
 Difficulty caps **nodes**, not depth, so a level means the same playing strength
 on any CPU. The time limit is only a backstop so a move cannot cook the watch.
 
-Run `scripts/fetch-engine.sh` before building - it cross-compiles the engine and
-downloads the matching network. Neither artefact is committed.
+Run `scripts/build-fairy-engine.sh` before building. It cross-compiles the engine
+from a pinned upstream revision and applies `scripts/fairy-adjudicate.patch`, which
+adds the `watchresult` command the app uses to adjudicate repetitions. **A stock
+Fairy-Stockfish build will not work**: without that command every position reports
+as unadjudicable and the game stops with 裁决失败. The binary is not committed.
 
 > **Licensing.** Pikafish derives from Stockfish and is GPL-3. The binary is not
 > in this repository, so the repository itself is unaffected. But distributing an
