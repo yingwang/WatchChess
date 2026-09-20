@@ -19,8 +19,8 @@
 
     <string name="side_red">执红</string>
     <string name="side_black">执黑</string>
-    <string name="on">开</string>
-    <string name="off">关</string>
+    <string name="state_on">已开启</string>
+    <string name="state_off">已关闭</string>
 
     <string name="result_red_wins">红胜</string>
     <string name="result_black_wins">黑胜</string>
@@ -28,4 +28,14 @@
     <string name="result_unavailable">裁决失败，请重开</string>
     <string name="tap_to_return">点击返回</string>
     <string name="engine_no_move">引擎未返回着法</string>
+
+    <string name="menu_help">帮助</string>
+    <string name="help_title">帮助</string>
+    <string name="help_step1">一、转动表冠，选中要走的棋子</string>
+    <string name="help_step2">二、点击屏幕，确认这枚棋子</string>
+    <string name="help_step3">三、转动表冠，选择落子的位置</string>
+    <string name="help_step4">四、点击屏幕，确认这一步棋</string>
+    <string name="help_cancel">向右滑动，取消并退回上一步</string>
+    <string name="help_menu">长按棋盘，打开对局菜单</string>
+    <string name="help_got_it">知道了</string>
 </resources>

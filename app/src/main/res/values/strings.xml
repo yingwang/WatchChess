@@ -27,8 +27,8 @@
 
     <string name="side_red">Red</string>
     <string name="side_black">Black</string>
-    <string name="on">ON</string>
-    <string name="off">OFF</string>
+    <string name="state_on">On</string>
+    <string name="state_off">Off</string>
 
     <string name="result_red_wins">Red wins</string>
     <string name="result_black_wins">Black wins</string>
@@ -36,4 +36,19 @@
     <string name="result_unavailable">Cannot adjudicate, please restart</string>
     <string name="tap_to_return">Tap to return</string>
     <string name="engine_no_move">Engine returned no move</string>
+
+    <!--
+      上手提示。表上没地方摆一页说明书，也没人会主动去翻，所以这几行只在第一次开局时
+      压在棋盘上出现一次，点一下就再也不出现；之后想回看就从长按菜单里进。
+      每行一个动作，按下棋时的先后排，不写别的。
+    -->
+    <string name="menu_help">Help</string>
+    <string name="help_title">Help</string>
+    <string name="help_step1">1. Turn the crown to pick a piece</string>
+    <string name="help_step2">2. Tap the screen to confirm</string>
+    <string name="help_step3">3. Turn the crown to pick a square</string>
+    <string name="help_step4">4. Tap the screen to move</string>
+    <string name="help_cancel">Swipe right to cancel</string>
+    <string name="help_menu">Press and hold for the menu</string>
+    <string name="help_got_it">Got it</string>
 </resources>

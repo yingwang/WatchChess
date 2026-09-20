@@ -58,6 +58,7 @@ import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Button
@@ -92,6 +93,9 @@ private val CursorRing = Color(0xFF00FF66)
 // 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
 // 2026-09-20 殿下试了两轮都说偏快，先从 45 调到 68，仍嫌敏感，再调到 105。
 private const val ROTARY_STEP = 105f
+
+// 上手提示只在装上之后的第一局出现一次，看过就记下来，之后不再打扰。
+private const val PREF_HELP_SEEN = "help_seen"
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
@@ -233,6 +237,8 @@ fun GameScreen() {
     var elapsedSec by remember { mutableIntStateOf(0) }
     var moveCount by remember { mutableIntStateOf(0) }
     var showMenu by remember { mutableStateOf(false) }
+    // 上手提示。第一次开局时自动压在棋盘上，点掉之后再也不自己出现，想回看走长按菜单。
+    var showHelp by remember { mutableStateOf(false) }
     var bgmOn by remember { mutableStateOf(true) }
     var sfxOn by remember { mutableStateOf(true) }
     var cursorIdx by remember { mutableIntStateOf(0) }
@@ -249,6 +255,7 @@ fun GameScreen() {
     val scope = rememberCoroutineScope()
     val searches = remember { GameSearchSession() }
     val sounds = remember { GameSounds(context) }
+    val prefs = remember { context.getSharedPreferences("watchchess", Context.MODE_PRIVATE) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
     // 引擎跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
@@ -288,6 +295,11 @@ fun GameScreen() {
         playedFrom.clear(); positionHistory = listOf(board.toFen())
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
+        // 第一次开局时把操作说明摆出来，就在人正要动手的那一刻，不必他自己去找。
+        if (!prefs.getBoolean(PREF_HELP_SEEN, false)) {
+            showHelp = true
+            prefs.edit().putBoolean(PREF_HELP_SEEN, true).apply()
+        }
         // 象棋红先。人执黑就是后手，开局得先让引擎替红走一步。
         if (side == PieceColor.BLACK) aiMoveTrigger++
     }
@@ -430,7 +442,7 @@ fun GameScreen() {
     LaunchedEffect(selectedPos, board) { cursorIdx = 0; rotaryAcc = 0f }
 
     fun onRotary(px: Float): Boolean {
-        if (aiThinking || gameOverMsg != null || showMenu) return false
+        if (aiThinking || gameOverMsg != null || showMenu || showHelp) return false
         val n = candidates.size
         if (n == 0) return false
         rotaryAcc += px
@@ -443,13 +455,14 @@ fun GameScreen() {
 
     // 点屏幕任意一处等于确认当前亮着的那个。两段共用这一条规矩，不必记两套。
     fun onConfirm() {
-        if (aiThinking || gameOverMsg != null) return
+        if (aiThinking || gameOverMsg != null || showHelp) return
         onTap(cursorPos ?: return)
     }
 
     // 右滑返回等于取消选中，退回挑子那一段
-    BackHandler(enabled = screen == "game" && (showMenu || selectedPos != null)) {
-        if (showMenu) showMenu = false
+    BackHandler(enabled = screen == "game" && (showHelp || showMenu || selectedPos != null)) {
+        if (showHelp) showHelp = false
+        else if (showMenu) showMenu = false
         else { selectedPos = null; legalMoves = emptyList(); cursorIdx = 0; vibrate(context, 15) }
     }
 
@@ -494,9 +507,12 @@ fun GameScreen() {
                     onToggleSfx = { sfxOn = sounds.toggleSfx() },
                     onUndo = { undo() },
                     onNewGame = { returnToMenu() },
+                    onHelp = { showMenu = false; showHelp = true },
                     onDismiss = { showMenu = false },
                 )
             }
+            // 说明层压在菜单之上，这样从菜单点进来时盖得住它。
+            if (showHelp) HelpOverlay(onDismiss = { showHelp = false })
         }
     }
 }
@@ -602,6 +618,7 @@ private fun InGameMenu(
     onToggleSfx: () -> Unit,
     onUndo: () -> Unit,
     onNewGame: () -> Unit,
+    onHelp: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     // 两行字加五个按钮竖着排，比这块圆屏高，最底下那个「继续」会被切掉，殿下
@@ -636,9 +653,10 @@ private fun InGameMenu(
             Spacer(Modifier.height(4.dp))
 
             MenuBtn(stringResource(R.string.menu_undo), canUndo, onUndo)
-            MenuBtn(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.on else R.string.off)), true, onToggleBgm)
-            MenuBtn(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.on else R.string.off)), true, onToggleSfx)
+            MenuBtn(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), true, onToggleBgm)
+            MenuBtn(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), true, onToggleSfx)
             MenuBtn(stringResource(R.string.menu_new_game), true, onNewGame)
+            MenuBtn(stringResource(R.string.menu_help), true, onHelp)
 
             Button(
                 onClick = onDismiss,
@@ -648,6 +666,71 @@ private fun InGameMenu(
             ) { Text(stringResource(R.string.menu_resume), color = Color.White, fontSize = 13.sp) }
         }
     }
+}
+
+/**
+ * 上手提示。
+ *
+ * 殿下 2026-09-20 说操作「并不是特别直白」，问说明该放哪。放进商店文案只解决装之前的
+ * 事，放一个 about 页则没人会去翻：表上的设置页是人乱按过一通之后才会到的地方。所以
+ * 提示出现在第一次开局的那一刻，直接压在棋盘上，四行字各是一个动作，点一下就消失，
+ * 以后都不再出现。想回看的从长按菜单里那一项进来，位置跟悔棋、音乐、新局并排。
+ */
+@Composable
+private fun HelpOverlay(onDismiss: () -> Unit) {
+    // 四条说明改成完整短句之后比原来长，窄的那几款表上会折行，折完就顶到圆边外头去了。
+    // 所以跟对局菜单一样让它能滚，表冠也接上，手势前后一致。
+    val scrollState = rememberScrollState()
+    val focus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    Box(
+        Modifier.fillMaxSize().background(Color(0xF7000000)).clickable { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier
+                .onRotaryScrollEvent {
+                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
+                    true
+                }
+                .focusRequester(focus)
+                .focusable()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 22.dp, vertical = 8.dp),
+        ) {
+            Text(stringResource(R.string.help_title), color = Color(0xFFD4A960), fontSize = 13.sp)
+            Spacer(Modifier.height(1.dp))
+            HelpLine(stringResource(R.string.help_step1))
+            HelpLine(stringResource(R.string.help_step2))
+            HelpLine(stringResource(R.string.help_step3))
+            HelpLine(stringResource(R.string.help_step4))
+            Spacer(Modifier.height(2.dp))
+            HelpLine(stringResource(R.string.help_cancel), Color(0x99FFFFFF), 11.sp)
+            HelpLine(stringResource(R.string.help_menu), Color(0x99FFFFFF), 11.sp)
+            Spacer(Modifier.height(3.dp))
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(30.dp),
+                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF3D2B1F)),
+                shape = RoundedCornerShape(6.dp),
+            ) { Text(stringResource(R.string.help_got_it), color = Color.White, fontSize = 13.sp) }
+        }
+    }
+}
+
+@Composable
+private fun HelpLine(text: String, color: Color = Color(0xEEFFFFFF), fontSize: TextUnit = 12.sp) {
+    Text(
+        text,
+        color = color,
+        fontSize = fontSize,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
