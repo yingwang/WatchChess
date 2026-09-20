@@ -10,8 +10,8 @@ Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 ## Features
 
 - Full Chinese Chess board optimized for round watch displays
-- AI opponent with 4 difficulty levels, played by a bundled Pikafish engine,
-  falling back to a built-in alpha-beta search if the engine cannot start
+- AI opponent with 4 difficulty levels, played by a bundled Fairy-Stockfish
+  engine, falling back to a built-in alpha-beta search if it cannot start
 - Crown-driven move entry, so nothing depends on hitting a 3 mm target
 - A how-to-play card on first launch, and from the in-game menu afterwards
 - Plays entirely offline: no account, no network, no data collected
@@ -39,7 +39,8 @@ candidates are ever highlighted, so an illegal move cannot be entered.
 
 ## AI Engine
 
-Games are played by **Pikafish**, run as a static arm64 subprocess. The watch's
+Games are played by a patched **Fairy-Stockfish**, run as a static arm64
+subprocess. The watch's
 Android userspace is 32-bit, but its kernel executes AArch64 binaries, so the
 engine ships as a fully static arm64 executable while the app itself stays
 32-bit. Two device quirks are worked around in code: `NumaPolicy` must be set
@@ -62,8 +63,8 @@ as unadjudicable and the game stops with 裁决失败. The binary is not committ
 > the same terms, so the whole app follows. The source is public here, which is
 > what satisfies the obligation to offer it.
 
-The original engine is kept as a fallback and answers whenever Pikafish fails to
-start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
+The original engine is kept as a fallback and answers whenever Fairy-Stockfish
+fails to start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
 - Iterative deepening & aspiration windows
 - Transposition tables (Zobrist hashing)
 - Null move pruning & late move reductions
