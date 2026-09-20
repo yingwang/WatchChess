@@ -1,4 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  默认语言是英文。这个应用要放到全世界的商店里，多数看到它的人不读中文，所以默认给英文，
+  中文放在 values-zh 里，表的系统语言是中文时自动切过去。
+  不做应用内的语言开关：安卓本来就按系统语言选资源，而且从安卓 13 起系统设置里就能给
+  单个应用指定语言（见 locales_config.xml），表上再加一个菜单项只是占地方。
+
+  棋子上的字不在这里，那是棋盘的一部分，任何语言下都是汉字。象棋的子就长这样，
+  全世界下象棋的人认的也是这几个字，翻译过去反而没人看得懂。
+-->
 <resources>
-    <string name="app_name">象棋</string>
+    <string name="app_name">WatchChess</string>
+
+    <string name="level_beginner">Beginner</string>
+    <string name="level_easy">Easy</string>
+    <string name="level_medium">Medium</string>
+    <string name="level_hard">Hard</string>
+
+    <string name="thinking">%1$s · thinking</string>
+    <string name="clock_moves">%1$d:%2$02d · move %3$d</string>
+
+    <string name="menu_undo">Undo</string>
+    <string name="menu_music">Music %1$s</string>
+    <string name="menu_sound">Sound %1$s</string>
+    <string name="menu_new_game">New game</string>
+    <string name="menu_resume">Resume</string>
+    <string name="on">ON</string>
+    <string name="off">OFF</string>
+
+    <string name="result_red_wins">Red wins</string>
+    <string name="result_black_wins">Black wins</string>
+    <string name="result_draw">Draw</string>
+    <string name="result_unavailable">Cannot adjudicate, please restart</string>
+    <string name="tap_to_return">Tap to return</string>
+    <string name="engine_no_move">Engine returned no move</string>
 </resources>

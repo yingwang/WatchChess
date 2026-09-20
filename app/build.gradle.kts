@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,13 +8,15 @@ plugins {
 
 android {
     namespace = "com.yingwang.watchchess"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.yingwang.watchchess"
         minSdk = 30
-        targetSdk = 34
-        versionCode = 3
+        // Play 不再接受 targetSdk 34 的新应用，提交时会被退回，报 "Target SDK of
+        // artifact is too low"。跟到 36。
+        targetSdk = 36
+        versionCode = 4
         versionName = "1.0.0"
     }
 
@@ -32,9 +37,31 @@ android {
         jvmTarget = "17"
     }
 
+    // 上传用的签名。钥匙与口令放在仓库之外（~/.config/watchchess/），绝不进版本库。
+    // 这是上传密钥不是应用签名密钥：应用签名密钥由 Play 自己保管（Play App Signing），
+    // 所以万一这把丢了还能向 Google 申请重置，不至于这个包名就此发不了更新。
+    val keystoreProps = Properties()
+    val keystorePropsFile = File(System.getProperty("user.home"), ".config/watchchess/keystore.properties")
+    if (keystorePropsFile.exists()) {
+        FileInputStream(keystorePropsFile).use { keystoreProps.load(it) }
+    }
+
+    signingConfigs {
+        create("release") {
+            val path: String? = keystoreProps.getProperty("storeFile")
+            if (path != null && File(path).exists()) {
+                storeFile = File(path)
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

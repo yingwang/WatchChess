@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 声明支持的语言。安卓 13 起，系统设置里就能单独给这个应用指定语言，
+     所以应用内不必再做一个语言开关，表上那块屏也放不下。 -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="zh" />
+</locale-config>

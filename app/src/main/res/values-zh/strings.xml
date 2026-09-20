@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 表的系统语言是中文时用这一份，不需要应用内切换。 -->
+<resources>
+    <string name="app_name">象棋</string>
+
+    <string name="level_beginner">入门</string>
+    <string name="level_easy">初级</string>
+    <string name="level_medium">中级</string>
+    <string name="level_hard">高级</string>
+
+    <string name="thinking">%1$s · 思考中</string>
+    <string name="clock_moves">%1$d:%2$02d · 第%3$d手</string>
+
+    <string name="menu_undo">悔棋</string>
+    <string name="menu_music">音乐 %1$s</string>
+    <string name="menu_sound">音效 %1$s</string>
+    <string name="menu_new_game">新局</string>
+    <string name="menu_resume">继续</string>
+    <string name="on">开</string>
+    <string name="off">关</string>
+
+    <string name="result_red_wins">红胜</string>
+    <string name="result_black_wins">黑胜</string>
+    <string name="result_draw">和棋</string>
+    <string name="result_unavailable">裁决失败，请重开</string>
+    <string name="tap_to_return">点击返回</string>
+    <string name="engine_no_move">引擎未返回着法</string>
+</resources>
