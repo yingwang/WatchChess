@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -124,16 +125,14 @@ private data class Difficulty(
 // 其实一样强。2026-09-20 殿下也说偏慢。
 // 所以改成让结点数真正生效，时间只当兜底，四档按大约三到四倍递进，每档差两层上下。
 //
-// 2026-09-20 殿下说高级等得不够久、还能更难，于是又量了一轮，同一个中局局面：
-//   二十五万结点  五点九秒  第 13 层   （原来的高级）
-//   六十万结点    十五秒    第 15 层
-//   一百二十万    二十五秒  第 15 层   （多花十秒，一层没多搜）
-// 所以高级定在六十万、十五秒：多等九秒换两层，再往上就不划算了。
+// 2026-09-20 一度把高级提到六十万结点、十五秒，实测能到第 15 层（二十五万是第 13 层，
+// 一百二十万仍是第 15 层，多花十秒白花）。但当天殿下试过之后说十五秒等得太久，遂调回
+// 二十五万、七秒。这一档的上限不是算力，是人愿意在表上等多久。
 private val DIFFICULTIES = listOf(
     Difficulty(R.string.level_beginner, depth = 3, timeMs = 800, nodes = 2_000, spreadCp = 60),
     Difficulty(R.string.level_easy, depth = 5, timeMs = 1500, nodes = 20_000, spreadCp = 30),
     Difficulty(R.string.level_medium, depth = 6, timeMs = 3000, nodes = 80_000, spreadCp = 15),
-    Difficulty(R.string.level_hard, depth = 8, timeMs = 15000, nodes = 600_000, spreadCp = 8),
+    Difficulty(R.string.level_hard, depth = 8, timeMs = 7000, nodes = 250_000, spreadCp = 8),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -455,10 +454,11 @@ fun GameScreen() {
     }
 
     if (screen == "menu") {
-        MainMenu(
-            onStart = { idx, side -> startGame(idx, side) },
-            selectedIdx = diffIdx,
-            selectedSide = playerColor,
+        MainMenu(onPick = { idx -> diffIdx = idx; screen = "side" }, selectedIdx = diffIdx)
+    } else if (screen == "side") {
+        SideMenu(
+            onPick = { side -> startGame(diffIdx, side) },
+            onBack = { screen = "menu" },
         )
     } else {
         Box(Modifier.fillMaxSize()) {
@@ -504,22 +504,48 @@ fun GameScreen() {
 // ── Main Menu ──────────────────────────────────────────────────────────────
 
 /**
- * 开局这一屏：先挑难度，执哪一方摆在下面。
+ * 开局分两屏：先挑难度，再挑执哪一方，挑完就开局。
  *
- * 殿下 2026-09-20 问过先选难度还是先选红黑，她自己也倾向先选难度，我同意。
- * 难度是每一局都可能改的东西，执哪一方多半定下来就不动了，所以常改的放前面，
- * 点难度那一下直接开局，不必为了一个很少改的选项多走一屏。
- *
- * 红黑那一行做成两个并排的按钮，选中的那个亮起来，不占一整屏。
- * 这一屏跟局内菜单一样能滚、能用表冠滚，因为四个难度加一行红黑已经超过圆屏的高度。
+ * 一开始我把两样并在一屏，难度按钮按下去直接开局，红黑只是个不起眼的开关。
+ * 殿下 2026-09-20 指出那样不对：人点了红或黑，屏幕上什么也没发生，会以为没点上。
+ * 一屏之内有的按钮开局、有的只是切换，这件事本身就说不清楚。
+ * 拆成两屏之后规矩只有一条：每点一下都往前走一步，最后那一下开局。
+ * 顺序是难度在前，因为难度是每局都可能换的，执哪一方多半定下来就不动。
  */
 @Composable
-private fun MainMenu(
-    onStart: (Int, PieceColor) -> Unit,
-    selectedIdx: Int,
-    selectedSide: PieceColor,
-) {
-    var side by remember(selectedSide) { mutableStateOf(selectedSide) }
+private fun MainMenu(onPick: (Int) -> Unit, selectedIdx: Int) {
+    MenuScaffold {
+        DIFFICULTIES.forEachIndexed { idx, diff ->
+            MenuChoice(
+                label = stringResource(diff.nameRes),
+                highlighted = idx == selectedIdx,
+                accent = Color(0xFFCC2222),
+            ) { onPick(idx) }
+        }
+    }
+}
+
+/** 第二屏：执红还是执黑。右滑退回去改难度。 */
+@Composable
+private fun SideMenu(onPick: (PieceColor) -> Unit, onBack: () -> Unit) {
+    BackHandler(enabled = true) { onBack() }
+    MenuScaffold {
+        MenuChoice(
+            label = stringResource(R.string.side_red),
+            highlighted = true,
+            accent = Color(0xFFCC2222),
+        ) { onPick(PieceColor.RED) }
+        MenuChoice(
+            label = stringResource(R.string.side_black),
+            highlighted = true,
+            accent = Color(0xFF2E2E2E),
+        ) { onPick(PieceColor.BLACK) }
+    }
+}
+
+/** 两屏共用的外框：能滚，表冠也能滚，免得选项一多就有一项落在圆边外头。 */
+@Composable
+private fun MenuScaffold(content: @Composable ColumnScope.() -> Unit) {
     val scrollState = rememberScrollState()
     val focus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
@@ -539,65 +565,27 @@ private fun MainMenu(
                 .focusRequester(focus)
                 .focusable()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 30.dp, vertical = 12.dp),
-        ) {
-            // 不放标题。四个难度加一行红黑已经顶满这块圆屏，标题一摆，红黑那行就被挤到
-            // 屏幕外面，得滚一下才看得见，而那是开局前就该一眼看到的东西。应用叫什么，
-            // 表盘上点进来的时候已经看过了。
-            DIFFICULTIES.forEachIndexed { idx, diff ->
-                val label = stringResource(diff.nameRes)
-                Button(
-                    onClick = { onStart(idx, side) },
-                    modifier = Modifier.fillMaxWidth().height(34.dp).padding(vertical = 2.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        backgroundColor = if (idx == selectedIdx) Color(0xFFCC2222) else Color(0xFF3D2B1F),
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                ) { Text(label, color = Color.White, fontSize = 13.sp) }
-            }
-
-            Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth()) {
-                SideBtn(
-                    label = stringResource(R.string.side_red),
-                    selected = side == PieceColor.RED,
-                    accent = RedPiece,
-                    modifier = Modifier.weight(1f),
-                ) { side = PieceColor.RED }
-                Spacer(Modifier.width(6.dp))
-                SideBtn(
-                    label = stringResource(R.string.side_black),
-                    selected = side == PieceColor.BLACK,
-                    accent = Color(0xFF111111),
-                    modifier = Modifier.weight(1f),
-                ) { side = PieceColor.BLACK }
-            }
-        }
+                .padding(horizontal = 30.dp, vertical = 14.dp),
+            content = content,
+        )
     }
 }
 
 @Composable
-private fun SideBtn(
+private fun MenuChoice(
     label: String,
-    selected: Boolean,
+    highlighted: Boolean,
     accent: Color,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.height(34.dp),
+        modifier = Modifier.fillMaxWidth().height(38.dp).padding(vertical = 3.dp),
         colors = ButtonDefaults.buttonColors(
-            backgroundColor = if (selected) accent else Color(0xFF2B1B0E),
+            backgroundColor = if (highlighted) accent else Color(0xFF3D2B1F),
         ),
         shape = RoundedCornerShape(6.dp),
-    ) {
-        Text(
-            label,
-            color = if (selected) Color.White else Color(0xFF8A7A5A),
-            fontSize = 12.sp,
-        )
-    }
+    ) { Text(label, color = Color.White, fontSize = 14.sp) }
 }
 
 // ── In-Game Menu Overlay ───────────────────────────────────────────────────
