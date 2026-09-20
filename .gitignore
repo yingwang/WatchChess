@@ -12,3 +12,4 @@ pikafish-bench.txt
 # 两样都靠 scripts/fetch-engine.sh 现取现编，源码与版本在那个脚本里写死。
 app/src/main/assets/pikafish.nnue
 app/src/main/jniLibs/*/libpikafish.so
+app/src/main/jniLibs/*/libfairystockfish.so

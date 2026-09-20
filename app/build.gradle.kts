@@ -38,11 +38,6 @@ android {
         }
     }
 
-    // 网络文件五十兆，压缩了既拖慢安装又让 openFd 拿不到长度，索性原样放进包里。
-    androidResources {
-        noCompress += "nnue"
-    }
-
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

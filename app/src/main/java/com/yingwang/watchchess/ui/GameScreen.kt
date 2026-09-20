@@ -58,7 +58,7 @@ import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Text
 import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
-import com.yingwang.watchchess.ai.PikafishEngine
+import com.yingwang.watchchess.ai.FairyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.yingwang.watchchess.model.*
@@ -88,9 +88,9 @@ private const val ROTARY_STEP = 68f
 /**
  * 一档难度要同时配两套参数，因为下棋的可能是两个引擎。
  *
- * 皮卡鱼那边用结点数封顶。结点数与机器快慢无关，同一档在哪台机器上都是同样的棋力，
- * 时间上限只是兜底，免得一步棋想太久把表烤热。内置那个 Kotlin 引擎则仍按深度与时限走，
- * 它只在皮卡鱼起不来的时候顶上。
+ * Fairy-Stockfish 那边用结点数封顶。结点数与机器快慢无关，同一档在哪台机器上都是同样
+ * 的棋力，时间上限只是兜底，免得一步棋想太久把表烤热。内置那个 Kotlin 引擎则仍按深度与
+ * 时限走，它只在外部引擎起不来的时候顶上。
  */
 private data class Difficulty(
     val name: String,
@@ -191,26 +191,27 @@ fun GameScreen() {
     val sounds = remember { GameSounds(context) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
-    // 皮卡鱼跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
+    // 引擎跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
     // 所以内置那个 Kotlin 引擎一直留着顶班，绝不让棋下不下去。
     //
-    // 只在真正下棋的时候才把它拉起来，回到菜单就放掉。表上一共一点七八个 G，这个进程
-    // 光网络就占六十多兆，一直挂着的话人还没开始下，内存就已经被占住，系统的低内存守卫
-    // 会把前台的象棋直接杀掉。2026-09-20 殿下遇到的「下着下着跳出去、像是重启」就是
-    // 这么来的，日志里 Fitbit 和另一个谷歌应用也被一并杀了。
-    val pikafish = remember { PikafishEngine(context) }
-    var pikafishReady by remember { mutableStateOf(false) }
+    // 只在真正下棋的时候才把它拉起来，回到菜单就放掉。表上一共一点七八个 G，挑难度的
+    // 时候没必要占着。先前用皮卡鱼时这一条是保命的：那个进程会从一百二十八兆一路涨到
+    // 三百七十八兆，2026-09-20 殿下遇到的「下着下着跳出去、像是重启」就是这么来的，
+    // 日志里 Fitbit 和天气也被一并杀了。换成 Fairy-Stockfish 之后实测二十四手恒定
+    // 八十一兆不增长，宽裕得多，但开局才起、回菜单就放这个习惯留着不亏。
+    val engine = remember { FairyEngine(context) }
+    var engineReady by remember { mutableStateOf(false) }
     LaunchedEffect(screen) {
         if (screen == "game") {
-            pikafishReady = pikafish.start()
-            if (!pikafishReady) Log.w("WatchChess", "pikafish unavailable: ${pikafish.lastError}")
+            engineReady = engine.start()
+            if (!engineReady) Log.w("WatchChess", "engine unavailable: ${engine.lastError}")
         } else {
-            pikafish.stop()
-            pikafishReady = false
+            engine.stop()
+            engineReady = false
         }
     }
 
-    DisposableEffect(Unit) { onDispose { sounds.release(); pikafish.stop() } }
+    DisposableEffect(Unit) { onDispose { sounds.release(); engine.stop() } }
 
     // Timer
     LaunchedEffect(screen, gameOverMsg) {
@@ -243,8 +244,8 @@ fun GameScreen() {
         aiThinking = true
         scope.launch {
             val d = DIFFICULTIES[diffIdx]
-            val move = if (pikafishReady) {
-                pikafish.findBestMove(board, moveHistory, d.nodes, d.timeMs)
+            val move = if (engineReady) {
+                engine.findBestMove(board, moveHistory, d.nodes, d.timeMs)
                     // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
                     ?: withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
             } else {
