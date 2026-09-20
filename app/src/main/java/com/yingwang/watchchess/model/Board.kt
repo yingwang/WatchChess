@@ -94,10 +94,19 @@ class Board {
         for (piece in getPiecesByColor(currentPlayer)) {
             moves.addAll(piece.getLegalMoves(this))
         }
-        // Filter out moves that would put own general in check
+        // Filter out moves that would put own general in check, or that would leave the
+        // two generals facing each other down an open file.
+        //
+        // The facing rule used to be applied only inside generateGeneralMoves, so it caught
+        // the general walking into the open file but not any other piece stepping out of the
+        // way and exposing it. A piece pinned solely by that rule was therefore offered as a
+        // legal move. Caught by MoveGenCrossCheckTest: in
+        // 3a5/4k4/9/9/9/9/9/9/3AA4/4K3r the advisor on e1 is the only thing between the two
+        // generals, so blocking the check with e1f0 is illegal and the position is mate, but
+        // we were generating that move and calling it a save.
         return moves.filterNot { move ->
             val testBoard = makeMove(move)
-            testBoard.isInCheck(currentPlayer)
+            testBoard.isInCheck(currentPlayer) || testBoard.isGeneralsFacing()
         }
     }
 

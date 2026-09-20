@@ -80,8 +80,8 @@ private val OpponentMoveColor = Color(0xFF1B6BFF)
 private val CursorRing = Color(0xFF00FF66)
 
 // 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
-// 2026-09-20 殿下试过之后说挑子和挑落点都快了一丢丢，从 45 调到 68。
-private const val ROTARY_STEP = 68f
+// 2026-09-20 殿下试了两轮都说偏快，先从 45 调到 68，仍嫌敏感，再调到 105。
+private const val ROTARY_STEP = 105f
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
@@ -605,29 +605,19 @@ private fun DrawScope.drawLastMove(ox: Float, oy: Float, c: Float, move: Move?) 
  * 对方刚走的那一步，画一条从起点到终点的箭杆。
  *
  * 原先只在起讫两格底下铺一层淡黄，太轻了，殿下 2026-09-20 说「对方下什么子现在不是
- * 特别清楚显示」。表上格子只有三毫米，底色的深浅根本分辨不出来，得画一根真的线，让人
- * 一眼看出它从哪儿走到哪儿。用蓝色是因为盘上已经有红黑两色棋子、绿色的光标、黄色的
- * 上一步底色，蓝色是唯一还空着的、又跟这四样都不会混的颜色。
+ * 特别清楚显示」。表上格子只有三毫米，底色的深浅根本分辨不出来，得画出来。
+ * 起初连起讫两点画了一根杆子，同日她说杆子多余，两个圈就够，遂去掉。
+ * 用蓝色是因为盘上已经有红黑两色棋子、绿色的光标、黄色的上一步底色，蓝色是唯一还
+ * 空着的、又跟这四样都不会混的颜色。
  */
 private fun DrawScope.drawOpponentMove(ox: Float, oy: Float, c: Float, move: Move?) {
     if (move == null) return
     val a = Offset(ox + move.from.col * c, oy + move.from.row * c)
     val b = Offset(ox + move.to.col * c, oy + move.to.row * c)
 
-    // 起点画一个空心圈，标明它原先在哪儿
+    // 起点一个细圈，标明它原先在哪儿
     drawCircle(OpponentMoveColor, c * 0.30f, a, style = Stroke(2.5f))
-
-    // 杆身两端各缩进一点，免得把棋子上的字压住
-    val dx = b.x - a.x; val dy = b.y - a.y
-    val len = kotlin.math.sqrt(dx * dx + dy * dy)
-    if (len > 1f) {
-        val ux = dx / len; val uy = dy / len
-        val start = Offset(a.x + ux * c * 0.32f, a.y + uy * c * 0.32f)
-        val end = Offset(b.x - ux * c * 0.46f, b.y - uy * c * 0.46f)
-        drawLine(OpponentMoveColor, start, end, strokeWidth = 3f)
-    }
-
-    // 终点套一个粗圈，这是它现在所在的位置
+    // 终点一个粗圈，这是它现在所在的位置
     drawCircle(OpponentMoveColor, c * 0.50f, b, style = Stroke(3.5f))
 }
 
