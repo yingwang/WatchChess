@@ -13,3 +13,6 @@ pikafish-bench.txt
 app/src/main/assets/pikafish.nnue
 app/src/main/jniLibs/*/libpikafish.so
 app/src/main/jniLibs/*/libfairystockfish.so
+
+# 别家应用的商店截图，只作参考，不属于本项目的产物。
+competitive/
