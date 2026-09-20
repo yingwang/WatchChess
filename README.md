@@ -53,11 +53,10 @@ adds the `watchresult` command the app uses to adjudicate repetitions. **A stock
 Fairy-Stockfish build will not work**: without that command every position reports
 as unadjudicable and the game stops with 裁决失败. The binary is not committed.
 
-> **Licensing.** Pikafish derives from Stockfish and is GPL-3. The binary is not
-> in this repository, so the repository itself is unaffected. But distributing an
-> APK that contains it - publishing, or just handing the file to someone - puts
-> that distribution under GPL-3, which would require relicensing this app and
-> offering its source. Settle that before shipping a build.
+> **Licensing.** This app is GPL-3, not MIT. Fairy-Stockfish derives from
+> Stockfish and is GPL-3, and a build that ships it has to be distributed under
+> the same terms, so the whole app follows. The source is public here, which is
+> what satisfies the obligation to offer it.
 
 The original engine is kept as a fallback and answers whenever Pikafish fails to
 start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
