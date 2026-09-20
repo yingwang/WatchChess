@@ -76,10 +76,12 @@ private val BlackPiece = Color(0xFF1A1A1A)
 private val SelectedRing = Color(0xFF00CC44)
 private val LegalDot = Color(0x8800CC44)
 private val LastMoveHighlight = Color(0x44FFCC00)
+private val OpponentMoveColor = Color(0xFF1B6BFF)
 private val CursorRing = Color(0xFF00FF66)
 
-// 表冠：累计到这个像素量算走一格。Pixel Watch 一个档位大约 60 到 70 像素。
-private const val ROTARY_STEP = 45f
+// 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
+// 2026-09-20 殿下试过之后说挑子和挑落点都快了一丢丢，从 45 调到 68。
+private const val ROTARY_STEP = 68f
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
@@ -147,9 +149,9 @@ private class GameSounds(context: Context) {
 
     var sfxOn = true
 
-    // 背景音乐默认关着。下棋多半是在安静的场合，音乐要人主动去开才合理，
-    // 落子与吃子那两声留着，它们是操作反馈不是配乐。菜单里两个开关都在。
-    var bgmOn = false
+    // 背景音乐默认开着。2026-09-20 先按殿下的话关成默认不开，当天她改了主意说还是
+    // 默认开，所以改回来。菜单里开关仍在，随时可关。
+    var bgmOn = true
 
     fun startBgm() { if (bgmOn) bgm?.start() }
     fun stopBgm() { bgm?.pause() }
@@ -179,7 +181,7 @@ fun GameScreen() {
     var elapsedSec by remember { mutableIntStateOf(0) }
     var moveCount by remember { mutableIntStateOf(0) }
     var showMenu by remember { mutableStateOf(false) }
-    var bgmOn by remember { mutableStateOf(false) }
+    var bgmOn by remember { mutableStateOf(true) }
     var sfxOn by remember { mutableStateOf(true) }
     var cursorIdx by remember { mutableIntStateOf(0) }
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
@@ -191,11 +193,21 @@ fun GameScreen() {
 
     // 皮卡鱼跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
     // 所以内置那个 Kotlin 引擎一直留着顶班，绝不让棋下不下去。
+    //
+    // 只在真正下棋的时候才把它拉起来，回到菜单就放掉。表上一共一点七八个 G，这个进程
+    // 光网络就占六十多兆，一直挂着的话人还没开始下，内存就已经被占住，系统的低内存守卫
+    // 会把前台的象棋直接杀掉。2026-09-20 殿下遇到的「下着下着跳出去、像是重启」就是
+    // 这么来的，日志里 Fitbit 和另一个谷歌应用也被一并杀了。
     val pikafish = remember { PikafishEngine(context) }
     var pikafishReady by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        pikafishReady = pikafish.start()
-        if (!pikafishReady) Log.w("WatchChess", "pikafish unavailable: ${pikafish.lastError}")
+    LaunchedEffect(screen) {
+        if (screen == "game") {
+            pikafishReady = pikafish.start()
+            if (!pikafishReady) Log.w("WatchChess", "pikafish unavailable: ${pikafish.lastError}")
+        } else {
+            pikafish.stop()
+            pikafishReady = false
+        }
     }
 
     DisposableEffect(Unit) { onDispose { sounds.release(); pikafish.stop() } }
@@ -501,6 +513,9 @@ private fun BoardCanvas(
         drawSelection(ox, oy, cell, selectedPos)
         drawLegalMoves(ox, oy, cell, legalMoves)
         drawPieces(ox, oy, cell, board)
+        // 只标对方那一步，画在棋子上面才看得见。轮到自己之后这条线一直留着，
+        // 直到自己走完被自己的着法顶掉。
+        if (lastMove?.piece?.color == PieceColor.BLACK) drawOpponentMove(ox, oy, cell, lastMove)
         drawCursor(ox, oy, cell, cursorPos, pickingDestination)
 
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
@@ -583,6 +598,36 @@ private fun DrawScope.drawLastMove(ox: Float, oy: Float, c: Float, move: Move?) 
     if (move == null) return
     for (pos in listOf(move.from, move.to))
         drawRect(LastMoveHighlight, Offset(ox + pos.col * c - c * 0.45f, oy + pos.row * c - c * 0.45f), Size(c * 0.9f, c * 0.9f))
+}
+
+/**
+ * 对方刚走的那一步，画一条从起点到终点的箭杆。
+ *
+ * 原先只在起讫两格底下铺一层淡黄，太轻了，殿下 2026-09-20 说「对方下什么子现在不是
+ * 特别清楚显示」。表上格子只有三毫米，底色的深浅根本分辨不出来，得画一根真的线，让人
+ * 一眼看出它从哪儿走到哪儿。用蓝色是因为盘上已经有红黑两色棋子、绿色的光标、黄色的
+ * 上一步底色，蓝色是唯一还空着的、又跟这四样都不会混的颜色。
+ */
+private fun DrawScope.drawOpponentMove(ox: Float, oy: Float, c: Float, move: Move?) {
+    if (move == null) return
+    val a = Offset(ox + move.from.col * c, oy + move.from.row * c)
+    val b = Offset(ox + move.to.col * c, oy + move.to.row * c)
+
+    // 起点画一个空心圈，标明它原先在哪儿
+    drawCircle(OpponentMoveColor, c * 0.30f, a, style = Stroke(2.5f))
+
+    // 杆身两端各缩进一点，免得把棋子上的字压住
+    val dx = b.x - a.x; val dy = b.y - a.y
+    val len = kotlin.math.sqrt(dx * dx + dy * dy)
+    if (len > 1f) {
+        val ux = dx / len; val uy = dy / len
+        val start = Offset(a.x + ux * c * 0.32f, a.y + uy * c * 0.32f)
+        val end = Offset(b.x - ux * c * 0.46f, b.y - uy * c * 0.46f)
+        drawLine(OpponentMoveColor, start, end, strokeWidth = 3f)
+    }
+
+    // 终点套一个粗圈，这是它现在所在的位置
+    drawCircle(OpponentMoveColor, c * 0.50f, b, style = Stroke(3.5f))
 }
 
 private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board) {

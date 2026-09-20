@@ -11,6 +11,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.util.concurrent.TimeUnit
 
 /**
  * 把皮卡鱼当作一个外部进程使唤，走 UCI 协议。
@@ -44,6 +45,12 @@ class PikafishEngine(private val context: Context) {
     suspend fun start(): Boolean = withContext(Dispatchers.IO) {
         if (isRunning) return@withContext true
         try {
+            // 先收尸再开工。引擎是个独立进程，应用被系统杀掉时它未必跟着死，会留成孤儿
+            // 继续占着两百多兆。再开一次象棋又起一个新的，于是表上挂着两个、三个引擎，
+            // 内存越滚越大，越下越容易被杀。2026-09-20 殿下说的「越下越容易被杀，一开始
+            // 却没事」就是这么来的，一开始只有一个。
+            reapStrays()
+
             val bin = File(context.applicationInfo.nativeLibraryDir, BIN_NAME)
             if (!bin.exists()) {
                 lastError = "engine binary not found at ${bin.absolutePath}"
@@ -54,10 +61,16 @@ class PikafishEngine(private val context: Context) {
                 return@withContext false
             }
 
-            val p = ProcessBuilder(bin.absolutePath)
+            val pb = ProcessBuilder(bin.absolutePath)
                 .directory(context.filesDir)
                 .redirectErrorStream(true)
-                .start()
+            // 静态链接进来的那个分配器（Scudo）默认把释放掉的内存攥在手里不还给系统，
+            // 于是同一份引擎、同一个网络、同样的参数，在电脑上常驻约三百三十兆，在表上
+            // 却涨到八百多兆，整块都记在一个匿名的 malloc 区里。表上一共才一点七八个 G，
+            // 撑不住。这两个开关让它一释放就还，别攒着。
+            pb.environment()["SCUDO_OPTIONS"] =
+                "release_to_os_interval_ms=0:may_return_null=true"
+            val p = pb.start()
             process = p
             writer = BufferedWriter(OutputStreamWriter(p.outputStream))
             reader = BufferedReader(InputStreamReader(p.inputStream))
@@ -93,9 +106,38 @@ class PikafishEngine(private val context: Context) {
     }
 
     fun stop() {
+        val p = process
         try { writer?.apply { write("quit\n"); flush() } } catch (_: Exception) {}
-        try { process?.destroy() } catch (_: Exception) {}
+        // 光发 quit 不够。引擎正在搜索的时候不读标准输入，那一行要等它算完才看得见，
+        // 而应用往往等不到那时候就被系统收走了。所以发完就直接杀，杀完确认它真的没了。
+        try { p?.destroy() } catch (_: Exception) {}
+        try {
+            if (p != null && !p.waitFor(1500, TimeUnit.MILLISECONDS)) p.destroyForcibly()
+        } catch (_: Exception) {
+            try { p?.destroyForcibly() } catch (_: Exception) {}
+        }
+        try { reader?.close() } catch (_: Exception) {}
+        try { writer?.close() } catch (_: Exception) {}
         process = null; writer = null; reader = null
+    }
+
+    /**
+     * 清掉上一次留下的引擎进程。
+     *
+     * 只能杀自己这个应用用户身份下的进程，杀不到也不要紧，这里尽力而为，失败不抛错。
+     * 用 pkill 按名字杀；名字就是那个 so 文件的文件名，因为可执行文件是以原生库的
+     * 名义打包进去的。
+     */
+    private fun reapStrays() {
+        try {
+            val p = ProcessBuilder("/system/bin/pkill", "-f", BIN_NAME)
+                .redirectErrorStream(true)
+                .start()
+            p.waitFor(1500, TimeUnit.MILLISECONDS)
+            p.destroyForcibly()
+        } catch (e: Exception) {
+            Log.d(TAG, "reapStrays: ${e.message}")
+        }
     }
 
     // ── 求着 ────────────────────────────────────────────────────────────────
@@ -183,7 +225,10 @@ class PikafishEngine(private val context: Context) {
         private const val TAG = "PikafishEngine"
         private const val BIN_NAME = "libpikafish.so"
         private const val NET_NAME = "pikafish.nnue"
-        private const val HASH_MB = 32
+        // 置换表开小。表上一共只有一点七八个 G，而引擎光是把网络读进来就要六十多兆，
+        // 再给它三十二兆的置换表，整个进程逼近三百五十兆，系统的低内存守卫会把前台的
+        // 象棋直接杀掉，连带还杀了别的应用。四兆对这个搜索规模够用了。
+        private const val HASH_MB = 4
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         private const val SEARCH_GRACE_MS = 8_000L
     }
