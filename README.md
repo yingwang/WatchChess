@@ -83,34 +83,40 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ## See Also
 
-- [chinese_chess_mobile](https://github.com/yingwang/chinese_chess_mobile) — 手机版中国象棋 (Android)
-- [XiangqiBot](https://github.com/yingwang/XiangqiBot) — 象棋 AI 对弈 Bot (Android)
+- [chinese_chess_mobile](https://github.com/yingwang/chinese_chess_mobile)：手机版中国象棋 (Android)
+- [XiangqiBot](https://github.com/yingwang/XiangqiBot)：象棋 AI 对弈 Bot (Android)
 
 ---
 
 # 手表象棋
 
-Wear OS 中国象棋 — 在手腕上下棋。
+Wear OS 上的中国象棋，一整局都在表上下完。
 
 ## 功能
 
-- 适配圆形手表屏幕的完整象棋棋盘
-- AI 对手，4 个难度等级（Alpha-Beta 搜索 + 开局库）
-- 走子/吃子音效
-- 触觉震动反馈
-- 计时器 & 步数统计
-- 悔棋（同时撤回你和 AI 的最后一步）
-- 背景音乐（可开关）
-- 长按呼出游戏内菜单
+- 九路十行的完整棋盘，按圆形表盘排布
+- 对手是随包带的 Fairy-Stockfish，四档难度
+- 转表冠选子选位置，不需要往三毫米的格子上戳
+- 首次开局弹一次帮助卡，之后从长按菜单里随时再看
+- 完全离线，不用账号，不用联网，不收集任何数据
+- 走子与吃子音效，将军有报子音
+- 每一步都有震动反馈
+- 计时与步数
+- 悔棋，连同引擎的应手一起撤回
+- 背景音乐可开关
+- 长按棋盘呼出对局菜单
 
 ## 操作
 
 | 操作 | 手势 |
 |------|------|
-| 选棋子 | 点击 |
-| 走子 | 点击绿点位置 |
+| 移动高亮 | 转动表冠 |
+| 确认高亮处 | 点屏幕任意位置 |
+| 取消选中 | 向右滑动 |
 | 打开菜单 | 长按 |
-| 结束后重开 | 点击任意位置 |
+| 终局后重开 | 点屏幕任意位置 |
+
+走一步棋要点两次。先转表冠，高亮在你能动的子之间移动，点一下把这只子定下来；再转，高亮改在这只子能去的位置之间移动，再点一下，这步棋就走了。全程不看你点在哪里，所以不需要瞄准。候选里只会出现合法的着法，走不出违规的棋。
 
 ## 编译
 
@@ -118,6 +124,8 @@ Wear OS 中国象棋 — 在手腕上下棋。
 ./gradlew assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
+
+引擎二进制不进仓库，编译前先跑 `scripts/build-fairy-engine.sh` 把它取下来编好。
 
 ## 许可
 
