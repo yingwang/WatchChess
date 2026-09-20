@@ -1,0 +1,1 @@
+A refined celadon chess-piece icon across the app and store. Resume your previous game after restarting, and continue playing after undoing a finished game.

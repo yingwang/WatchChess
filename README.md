@@ -1,5 +1,7 @@
 # WatchChess 象棋
 
+<p align="center"><img src="store-assets/icon-512.png" width="128" alt="WatchChess icon" /></p>
+
 Chinese Chess (Xiangqi) for Wear OS — play on your wrist.
 
 <p align="center">
