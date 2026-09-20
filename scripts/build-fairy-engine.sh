@@ -12,6 +12,7 @@ mkdir -p "$ROOT/build"
 FAIRY_BUILD="$(mktemp -d "$ROOT/build/fairy-engine.XXXXXX")"
 # 使用固定版本，保留上游工作树里已有的 TLS 实验，不修改它。
 git -C "$FAIRY_SRC" archive "$FAIRY_REV" src | tar -x -C "$FAIRY_BUILD"
+patch -d "$FAIRY_BUILD" -p1 < "$ROOT/scripts/fairy-adjudicate.patch"
 make -C "$FAIRY_BUILD/src" -f Makefile -f "$ROOT/scripts/fairy-android.mk" -j8 \
     KERNEL=Linux OS=Linux ARCH=armv8 COMP=ndk \
     CXX="$TOOLCHAIN/aarch64-linux-android30-clang++" \

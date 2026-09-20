@@ -182,11 +182,10 @@ class ChessAI(
             else quiescenceSearch(board, alpha, beta, maximizing, quiescenceDepth)
         }
 
-        if (board.isCheckmate()) {
+        if (board.noLegalMoveWinner() != null) {
             return if (maximizing) -CHECKMATE_SCORE + (maxDepth - depth)
             else CHECKMATE_SCORE - (maxDepth - depth)
         }
-        if (board.isStalemate()) return 0
 
         // Futility pruning: at shallow depths, skip moves that can't possibly raise alpha
         if (!inCheckNow && effectiveDepth <= 2 && Math.abs(alpha) < CHECKMATE_SCORE - 100) {

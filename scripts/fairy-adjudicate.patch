@@ -1,0 +1,20 @@
+--- a/src/uci.cpp
++++ b/src/uci.cpp
+@@ -388,6 +388,17 @@
+       else if (token == "flip")     pos.flip();
+       else if (token == "bench")    bench(pos, is, states);
+       else if (token == "d")        sync_cout << pos << sync_endl;
++      else if (token == "watchresult")
++      {
++          // Called only while idle. Use played history, never a search score.
++          Value result;
++          bool ended = pos.is_game_end(result, 0);
++          if (!ended && !MoveList<LEGAL>(pos).size())
++              result = pos.checkers() ? pos.checkmate_value() : pos.stalemate_value(), ended = true;
++          std::string verdict = !ended ? "ongoing" : result == VALUE_DRAW ? "draw"
++              : ((result > VALUE_DRAW) == (pos.side_to_move() == WHITE) ? "red" : "black");
++          sync_cout << "watchresult " << verdict << sync_endl;
++      }
+       else if (token == "eval")     trace_eval(pos);
+       else if (token == "compiler") sync_cout << compiler_info() << sync_endl;
+       else if (token == "export_net")

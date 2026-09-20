@@ -5,6 +5,7 @@ import android.util.Log
 import com.yingwang.watchchess.model.Board
 import com.yingwang.watchchess.model.Move
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -116,6 +117,30 @@ class FairyEngine(private val context: Context) {
 
     // ── 求着 ────────────────────────────────────────────────────────────────
 
+    /** 亚象联棋例由引擎的历史状态裁定，不能用搜索的 mate/cp 分数推断。 */
+    internal suspend fun adjudicate(moveHistory: List<Move>): GameVerdict = runInterruptible(Dispatchers.IO) {
+        try {
+            check(isRunning) { "rules engine unavailable" }
+            val moves = moveHistory.joinToString(" ") { it.toUci() }
+            send(if (moves.isEmpty()) "position startpos" else "position startpos moves $moves")
+            send("watchresult")
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (true) {
+                val line = output?.readUntil(deadline) ?: error("rules engine did not answer")
+                GameVerdict.fromProtocol(line)?.let { return@runInterruptible it }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            GameVerdict.UNAVAILABLE
+        } catch (e: InterruptedException) {
+            stop()
+            throw e
+        } catch (e: Exception) {
+            lastError = "${e.javaClass.simpleName}: ${e.message}"
+            stop()
+            GameVerdict.UNAVAILABLE
+        }
+    }
+
     /**
      * 让引擎给出一步棋。
      *
@@ -132,8 +157,8 @@ class FairyEngine(private val context: Context) {
         timeLimitMs: Long,
         spreadCp: Int,
         alreadyPlayedHere: Set<String>,
-    ): Move? = withContext(Dispatchers.IO) {
-        if (!isRunning) return@withContext null
+    ): Move? = runInterruptible(Dispatchers.IO) {
+        if (!isRunning) return@runInterruptible null
         try {
             val moves = moveHistory.joinToString(" ") { it.toUci() }
             send(if (moves.isEmpty()) "position startpos" else "position startpos moves $moves")
@@ -142,7 +167,7 @@ class FairyEngine(private val context: Context) {
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeLimitMs + SEARCH_GRACE_MS)
             var best: String? = null
             // multipv 序号到（分数，着法）。同一序号后来的行覆盖先前的，留下的是最深一层的结果。
-            val lines = HashMap<Int, Pair<Int, String>>()
+            val lines = HashMap<Int, FairyProtocol.Candidate>()
             while (System.nanoTime() < deadline) {
                 val line = output?.readUntil(deadline) ?: break
                 if (line.startsWith("bestmove")) {
@@ -154,11 +179,15 @@ class FairyEngine(private val context: Context) {
             if (best == null) {
                 lastError = "engine search timed out or ended before bestmove"
                 stop() // 防止迟到的 bestmove 被下一次搜索误读。
-                return@withContext null
+                return@runInterruptible null
             }
             val chosen = FairyProtocol.pick(lines, best, spreadCp, alreadyPlayedHere)
             // 不把坐标合法但走法违规的输出交给界面。
             board.getAllLegalMoves().find { it.toUci() == chosen }
+        } catch (e: InterruptedException) {
+            // 关闭被取消的搜索，丢弃其输出；不能把取消误当成普通失败而启动回退搜索。
+            stop()
+            throw e
         } catch (e: Exception) {
             lastError = "${e.javaClass.simpleName}: ${e.message}"
             Log.w(TAG, "findBestMove failed", e)

@@ -62,6 +62,7 @@ import androidx.wear.compose.material.Text
 import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
 import com.yingwang.watchchess.ai.FairyEngine
+import com.yingwang.watchchess.ai.GameVerdict
 import com.yingwang.watchchess.ai.toFen
 import com.yingwang.watchchess.ai.toUci
 import kotlinx.coroutines.Dispatchers
@@ -126,6 +127,7 @@ private val DIFFICULTIES = listOf(
 )
 
 private data class Snapshot(val board: Board, val move: Move)
+private data class TurnResult(val move: Move?, val message: String?)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -224,34 +226,31 @@ fun GameScreen() {
     // 只在本局有效，开新局清空。
     val playedFrom = remember { mutableMapOf<String, MutableSet<String>>() }
     // 每走一步之后的局面，跟着法历史一一对应，所以悔棋时一起回退，不会数错。
-    // 用来数同一个局面出现过几次：第三次就按重复局面判和，这样一局棋不可能卡死在那儿。
+    // 仅记录盘面；裁决用引擎收到的完整 moveHistory，不以重复次数直接判和。
     var positionHistory by remember { mutableStateOf(listOf<String>()) }
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val searches = remember { GameSearchSession() }
     val sounds = remember { GameSounds(context) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
     // 引擎跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
     // 所以内置那个 Kotlin 引擎一直留着顶班，绝不让棋下不下去。
     //
-    // 只在真正下棋的时候才把它拉起来，回到菜单就放掉。表上一共一点七八个 G，挑难度的
-    // 时候没必要占着。先前用皮卡鱼时这一条是保命的：那个进程会从一百二十八兆一路涨到
-    // 三百七十八兆，2026-09-20 殿下遇到的「下着下着跳出去、像是重启」就是这么来的，
-    // 日志里 Fitbit 和天气也被一并杀了。换成 Fairy-Stockfish 之后实测二十四手恒定
-    // 八十一兆不增长，宽裕得多，但开局才起、回菜单就放这个习惯留着不亏。
+    // 菜单中保留预热进程；取消正在进行的搜索时回收进程，下次求着自动重启。
     val engine = remember { FairyEngine(context) }
     var engineReady by remember { mutableStateOf(false) }
     // 应用一打开就先把引擎热起来，别等到开局才启动。它启动加握手要一秒七，摆在开局
     // 那一刻就正好压在第一步棋上，殿下 2026-09-20 说的「感觉有点偏慢」多半是这一下。
     // 挑难度那几秒足够它准备好。现在它常驻也就八十多兆，表上还有五百多兆余量，扛得住。
     LaunchedEffect(Unit) {
-        engineReady = engine.start()
+        searches.withEngine { engineReady = engine.start() }
         if (!engineReady) Log.w("WatchChess", "engine unavailable: ${engine.lastError}")
     }
 
-    DisposableEffect(Unit) { onDispose { sounds.release(); engine.stop() } }
+    DisposableEffect(Unit) { onDispose { searches.invalidate(); sounds.release(); engine.stop() } }
 
     // Timer
     LaunchedEffect(screen, gameOverMsg) {
@@ -261,6 +260,7 @@ fun GameScreen() {
     }
 
     fun startGame(difficulty: Int) {
+        searches.invalidate()
         diffIdx = difficulty
         val d = DIFFICULTIES[difficulty]
         val qDepth = if (d.depth >= 6) 3 else 2
@@ -269,48 +269,50 @@ fun GameScreen() {
         selectedPos = null; legalMoves = emptyList(); lastMove = null
         moveHistory = emptyList(); undoStack = emptyList()
         aiThinking = false; gameOverMsg = null; showMenu = false
-        playedFrom.clear(); positionHistory = emptyList()
+        playedFrom.clear(); positionHistory = listOf(board.toFen())
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
     }
 
-    /**
-     * 这一局是不是已经结束了。
-     *
-     * 除了将死与困毙，还要数重复局面。原先根本没有这一条，所以两边只要来回推，
-     * 一局棋就永远走不完。殿下 2026-09-20 问的正是这个：「那不就一直卡在那儿了吗」。
-     * 同一个局面第三次出现就判和，这是象棋里通行的办法，也让死循环在规则上不可能发生。
-     */
-    fun checkGameOver(b: Board, history: List<String>): String? {
-        if (b.isCheckmate()) return if (b.currentPlayer == PieceColor.RED) "黑胜" else "红胜"
-        if (b.isStalemate()) return "和棋"
-        val key = b.toFen()
-        if (history.count { it == key } >= 3) return "和棋"
+    /** 将死和困毙可立即判断；重复须交给引擎检查完整棋谱及长将、长捉责任。 */
+    fun checkGameOver(b: Board): String? {
+        b.noLegalMoveWinner()?.let { return if (it == PieceColor.RED) "红胜" else "黑胜" }
         return null
     }
 
     fun aiMove() {
-        if (gameOverMsg != null) return
+        if (gameOverMsg != null || aiThinking || screen != "game") return
         aiThinking = true
-        scope.launch {
-            val d = DIFFICULTIES[diffIdx]
-            val positionKey = board.toFen()
-            // 这个局面已经出现过几次。越是重现，越使劲去换一着：把「差多少算差不多好」
-            // 一次放宽六十，让候选池变大，好跳出循环。真跳不出去也不要紧，第三次重复
-            // 就按和棋收场了，卡不住。
-            val seenBefore = positionHistory.count { it == positionKey }
+        val searchBoard = board
+        val searchHistory = moveHistory.toList()
+        val fallbackAi = ai
+        val d = DIFFICULTIES[diffIdx]
+        val positionKey = searchBoard.toFen()
+        val alreadyPlayed = playedFrom[positionKey].orEmpty().toSet()
+        searches.search(scope, compute = {
+            // 取消旧搜索会关闭旧进程；下一次调用在同一把锁内重新启动，避免协议串线。
+            if (!engine.isRunning) engineReady = engine.start()
+            val before = if (engineReady) engine.adjudicate(searchHistory) else GameVerdict.UNAVAILABLE
+            if (before != GameVerdict.ONGOING) return@search TurnResult(null, before.message)
             val move = if (engineReady) {
                 engine.findBestMove(
-                    board, moveHistory, d.nodes, d.timeMs,
-                    d.spreadCp + seenBefore * 60,
-                    playedFrom[positionKey].orEmpty(),
+                    searchBoard, searchHistory, d.nodes, d.timeMs,
+                    d.spreadCp,
+                    alreadyPlayed,
                 )
                     // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
-                    ?: withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
+                    ?: withContext(Dispatchers.Default) { fallbackAi.findBestMove(searchBoard, searchHistory) }
             } else {
-                withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
+                withContext(Dispatchers.Default) { fallbackAi.findBestMove(searchBoard, searchHistory) }
             }
-            if (move != null) {
+            if (move == null) return@search TurnResult(null, "引擎未返回着法")
+            if (!engine.isRunning) engineReady = engine.start()
+            val after = if (engineReady) engine.adjudicate(searchHistory + move) else GameVerdict.UNAVAILABLE
+            TurnResult(move, after.message)
+        }, applyResult = { result ->
+            val move = result.move
+            if (move == null && screen == "game" && board === searchBoard) gameOverMsg = result.message
+            if (move != null && screen == "game" && board === searchBoard) {
                 playedFrom.getOrPut(positionKey) { mutableSetOf() }.add(move.toUci())
                 undoStack = undoStack + Snapshot(board, move)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
@@ -318,12 +320,19 @@ fun GameScreen() {
                 positionHistory = positionHistory + nb.toFen()
                 if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
                 else { sounds.playMove(); vibrate(context) }
-                gameOverMsg = checkGameOver(board, positionHistory)
+                gameOverMsg = checkGameOver(board) ?: result.message
                 if (gameOverMsg != null) vibrate(context, 100)
                 else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
             }
-            aiThinking = false
-        }
+        }, finished = { aiThinking = false })
+    }
+
+    fun returnToMenu() {
+        searches.invalidate()
+        aiThinking = false
+        showMenu = false
+        sounds.stopBgm()
+        screen = "menu"
     }
 
     fun undo() {
@@ -347,7 +356,7 @@ fun GameScreen() {
             selectedPos = null; legalMoves = emptyList(); moveCount++
             if (moveToMake.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
             else { sounds.playMove(); vibrate(context) }
-            gameOverMsg = checkGameOver(board, positionHistory)
+            gameOverMsg = checkGameOver(board)
             if (gameOverMsg != null) { vibrate(context, 100) } else {
                 if (board.isInCheck(board.currentPlayer)) sounds.sayCheck()
                 aiMove()
@@ -427,7 +436,7 @@ fun GameScreen() {
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
-                onGameOverTap = { sounds.stopBgm(); screen = "menu" },
+                onGameOverTap = { returnToMenu() },
             )
             // Menu overlay
             if (showMenu) {
@@ -441,7 +450,7 @@ fun GameScreen() {
                     onToggleBgm = { bgmOn = sounds.toggleBgm() },
                     onToggleSfx = { sfxOn = sounds.toggleSfx() },
                     onUndo = { undo() },
-                    onNewGame = { sounds.stopBgm(); screen = "menu" },
+                    onNewGame = { returnToMenu() },
                     onDismiss = { showMenu = false },
                 )
             }

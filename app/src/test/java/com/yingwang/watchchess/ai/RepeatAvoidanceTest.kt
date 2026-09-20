@@ -19,7 +19,7 @@ class RepeatAvoidanceTest {
 
     /** multipv 序号 to (分数, 着法)。分数越大越好。 */
     private fun lines(vararg pairs: Pair<Int, String>) =
-        pairs.mapIndexed { i, (cp, mv) -> (i + 1) to (cp to mv) }.toMap()
+        pairs.mapIndexed { i, (cp, mv) -> (i + 1) to FairyProtocol.Candidate(12, cp, null, mv) }.toMap()
 
     @Test
     fun `picks a move it has not played from this position`() {
@@ -58,11 +58,11 @@ class RepeatAvoidanceTest {
     fun `parsing keeps the deepest line for each multipv slot`() {
         // 同一个 multipv 序号会随着搜索加深反复出现，留下的必须是最后那一条
         assertEquals(
-            1 to (57 to "b0c2"),
+            1 to FairyProtocol.Candidate(12, 57, null, "b0c2"),
             FairyProtocol.parseInfo("info depth 12 seldepth 15 multipv 1 score cp 57 nodes 900 pv b0c2 h9g7"),
         )
-        // 有杀着的局面不参与抽签，分数不是 cp 的行一律忽略
-        assertEquals(null, FairyProtocol.parseInfo("info depth 9 multipv 1 score mate 3 pv b0c2"))
+        assertEquals(1 to FairyProtocol.Candidate(9, null, 3, "b0c2"),
+            FairyProtocol.parseInfo("info depth 9 multipv 1 score mate 3 pv b0c2"))
         assertEquals(null, FairyProtocol.parseInfo("info string classical evaluation enabled"))
     }
 
