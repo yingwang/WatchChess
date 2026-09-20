@@ -12,6 +12,7 @@ import android.os.VibratorManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -89,6 +90,25 @@ private val LegalDot = Color(0x8800CC44)
 private val OpponentMoveColor = Color(0xFF1B6BFF)
 private val OwnMoveColor = Color(0xFF17A34A)
 private val CursorRing = Color(0xFF00FF66)
+
+// 菜单一套青瓷色。殿下 2026-09-20 选的方向：底色是很深的墨青，按钮同色系里稍亮一档，
+// 描一道极细的浅线，当前选中的那一个填汝窑那种偏灰的蓝绿。
+// 红方黑方不再各配红黑两色，她说了「不用特意用红色黑色，都按钮就是同一」，所以整套
+// 界面里按钮只有两副长相：寻常的和选中的。棋盘本身不动，木色照旧。
+private val MenuBg = Color(0xFF0E1614)
+private val BtnFill = Color(0xFF1C2926)
+private val BtnEdge = Color(0x33A9CFC8)
+private val BtnText = Color(0xFFE8EFED)
+private val BtnTextOff = Color(0xFF5B6B68)
+private val Celadon = Color(0xFF7FA8A0)
+private val CeladonText = Color(0xFF0B1211)
+private val MenuHeading = Color(0xFF9CC3BB)
+
+// 按钮占屏宽的比例。表是圆的，越往上下两端可用的宽度越窄，通栏的按钮排到最下面
+// 左右两角就被圆边切掉，殿下 2026-09-20 看见的正是这个。收到这个比例再配上药丸形的
+// 圆角，最下面那一个也进得来。
+private const val BTN_WIDTH = 0.76f
+private val BTN_HEIGHT = 34.dp
 
 // 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
 // 2026-09-20 殿下试了两轮都说偏快，先从 45 调到 68，仍嫌敏感，再调到 105。
@@ -532,11 +552,11 @@ fun GameScreen() {
 private fun MainMenu(onPick: (Int) -> Unit, selectedIdx: Int) {
     MenuScaffold {
         DIFFICULTIES.forEachIndexed { idx, diff ->
-            MenuChoice(
+            WatchButton(
                 label = stringResource(diff.nameRes),
-                highlighted = idx == selectedIdx,
-                accent = Color(0xFFCC2222),
-            ) { onPick(idx) }
+                selected = idx == selectedIdx,
+                onClick = { onPick(idx) },
+            )
         }
     }
 }
@@ -546,16 +566,8 @@ private fun MainMenu(onPick: (Int) -> Unit, selectedIdx: Int) {
 private fun SideMenu(onPick: (PieceColor) -> Unit, onBack: () -> Unit) {
     BackHandler(enabled = true) { onBack() }
     MenuScaffold {
-        MenuChoice(
-            label = stringResource(R.string.side_red),
-            highlighted = true,
-            accent = Color(0xFFCC2222),
-        ) { onPick(PieceColor.RED) }
-        MenuChoice(
-            label = stringResource(R.string.side_black),
-            highlighted = true,
-            accent = Color(0xFF2E2E2E),
-        ) { onPick(PieceColor.BLACK) }
+        WatchButton(stringResource(R.string.side_red), onClick = { onPick(PieceColor.RED) })
+        WatchButton(stringResource(R.string.side_black), onClick = { onPick(PieceColor.BLACK) })
     }
 }
 
@@ -568,11 +580,12 @@ private fun MenuScaffold(content: @Composable ColumnScope.() -> Unit) {
     LaunchedEffect(Unit) { focus.requestFocus() }
 
     Box(
-        Modifier.fillMaxSize().background(Color(0xFF1A1208)),
+        Modifier.fillMaxSize().background(MenuBg),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
                 .onRotaryScrollEvent {
                     scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
@@ -581,27 +594,52 @@ private fun MenuScaffold(content: @Composable ColumnScope.() -> Unit) {
                 .focusRequester(focus)
                 .focusable()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 30.dp, vertical = 14.dp),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             content = content,
         )
     }
 }
 
+/**
+ * 全应用唯一的按钮。
+ *
+ * 之前三处各写各的：难度那一屏高 38，对局菜单里高 34，帮助里的「知道了」高 30；颜色上
+ * 多数是深褐，「继续」却是灰的，执黑那一项又近乎纯黑。殿下 2026-09-20 说「所有按钮风格
+ * 好像不是特别的统一」，指的就是这个。现在只留这一个函数，尺寸圆角描边字号都在这里，
+ * 想改一处就改这里，不会再各走各的。
+ *
+ * selected 为真时填青瓷色，用来标当前选中的那一项，别的语义一概不用这个颜色。
+ */
 @Composable
-private fun MenuChoice(
+private fun WatchButton(
     label: String,
-    highlighted: Boolean,
-    accent: Color,
     onClick: () -> Unit,
+    enabled: Boolean = true,
+    selected: Boolean = false,
 ) {
     Button(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(38.dp).padding(vertical = 3.dp),
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth(BTN_WIDTH)
+            .height(BTN_HEIGHT)
+            .border(1.dp, if (selected) Color.Transparent else BtnEdge, RoundedCornerShape(50)),
         colors = ButtonDefaults.buttonColors(
-            backgroundColor = if (highlighted) accent else Color(0xFF3D2B1F),
+            backgroundColor = if (selected) Celadon else BtnFill,
+            disabledBackgroundColor = BtnFill,
         ),
-        shape = RoundedCornerShape(6.dp),
-    ) { Text(label, color = Color.White, fontSize = 14.sp) }
+        shape = RoundedCornerShape(50),
+    ) {
+        Text(
+            label,
+            color = when {
+                !enabled -> BtnTextOff
+                selected -> CeladonText
+                else -> BtnText
+            },
+            fontSize = 13.sp,
+        )
+    }
 }
 
 // ── In-Game Menu Overlay ───────────────────────────────────────────────────
@@ -631,12 +669,12 @@ private fun InGameMenu(
     LaunchedEffect(Unit) { menuFocus.requestFocus() }
 
     Box(
-        Modifier.fillMaxSize().background(Color(0xCC000000)).clickable { onDismiss() },
+        Modifier.fillMaxSize().background(Color(0xF0000000)).clickable { onDismiss() },
         contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
                 .onRotaryScrollEvent {
                     scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
@@ -645,25 +683,19 @@ private fun InGameMenu(
                 .focusRequester(menuFocus)
                 .focusable()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 40.dp, vertical = 16.dp),
+                .padding(horizontal = 18.dp, vertical = 16.dp),
         ) {
             val min = elapsedSec / 60; val sec = elapsedSec % 60
-            Text(diffName, color = Color(0xFFD4A960), fontSize = 13.sp)
+            Text(diffName, color = MenuHeading, fontSize = 13.sp)
             Text(stringResource(R.string.clock_moves, min, sec, moveCount + 1), color = Color(0xAAFFFFFF), fontSize = 11.sp)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
 
-            MenuBtn(stringResource(R.string.menu_undo), canUndo, onUndo)
-            MenuBtn(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), true, onToggleBgm)
-            MenuBtn(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), true, onToggleSfx)
-            MenuBtn(stringResource(R.string.menu_new_game), true, onNewGame)
-            MenuBtn(stringResource(R.string.menu_help), true, onHelp)
-
-            Button(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().height(34.dp),
-                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF555555)),
-                shape = RoundedCornerShape(6.dp),
-            ) { Text(stringResource(R.string.menu_resume), color = Color.White, fontSize = 13.sp) }
+            WatchButton(stringResource(R.string.menu_undo), onUndo, enabled = canUndo)
+            WatchButton(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), onToggleBgm)
+            WatchButton(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), onToggleSfx)
+            WatchButton(stringResource(R.string.menu_new_game), onNewGame)
+            WatchButton(stringResource(R.string.menu_help), onHelp)
+            WatchButton(stringResource(R.string.menu_resume), onDismiss)
         }
     }
 }
@@ -700,9 +732,9 @@ private fun HelpOverlay(onDismiss: () -> Unit) {
                 .focusRequester(focus)
                 .focusable()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 22.dp, vertical = 8.dp),
+                .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
-            Text(stringResource(R.string.help_title), color = Color(0xFFD4A960), fontSize = 13.sp)
+            Text(stringResource(R.string.help_title), color = MenuHeading, fontSize = 13.sp)
             Spacer(Modifier.height(1.dp))
             HelpLine(stringResource(R.string.help_step1))
             HelpLine(stringResource(R.string.help_step2))
@@ -712,12 +744,7 @@ private fun HelpOverlay(onDismiss: () -> Unit) {
             HelpLine(stringResource(R.string.help_cancel), Color(0x99FFFFFF), 11.sp)
             HelpLine(stringResource(R.string.help_menu), Color(0x99FFFFFF), 11.sp)
             Spacer(Modifier.height(3.dp))
-            Button(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().height(30.dp),
-                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF3D2B1F)),
-                shape = RoundedCornerShape(6.dp),
-            ) { Text(stringResource(R.string.help_got_it), color = Color.White, fontSize = 13.sp) }
+            WatchButton(stringResource(R.string.help_got_it), onDismiss)
         }
     }
 }
@@ -731,17 +758,6 @@ private fun HelpLine(text: String, color: Color = Color(0xEEFFFFFF), fontSize: T
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth(),
     )
-}
-
-@Composable
-private fun MenuBtn(label: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(34.dp),
-        colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF3D2B1F)),
-        shape = RoundedCornerShape(6.dp),
-    ) { Text(label, color = if (enabled) Color.White else Color(0xFF666666), fontSize = 13.sp) }
 }
 
 // ── Board Canvas ───────────────────────────────────────────────────────────

@@ -1,0 +1,5 @@
+First release.
+
+Chinese chess for the watch, played with the rotating crown so you never have to hit a 3 mm target with a fingertip. Turn the crown to pick a piece, tap to confirm, turn again to choose where it goes, tap to play the move.
+
+Four difficulty levels, backed by a real chess engine running on the watch itself. Play Red or Black. Works with no phone and no network.
