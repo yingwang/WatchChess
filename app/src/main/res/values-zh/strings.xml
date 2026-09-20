@@ -16,6 +16,9 @@
     <string name="menu_sound">音效 %1$s</string>
     <string name="menu_new_game">新局</string>
     <string name="menu_resume">继续</string>
+
+    <string name="side_red">执红</string>
+    <string name="side_black">执黑</string>
     <string name="on">开</string>
     <string name="off">关</string>
 

@@ -24,6 +24,9 @@
     <string name="menu_sound">Sound %1$s</string>
     <string name="menu_new_game">New game</string>
     <string name="menu_resume">Resume</string>
+
+    <string name="side_red">Red</string>
+    <string name="side_black">Black</string>
     <string name="on">ON</string>
     <string name="off">OFF</string>
 

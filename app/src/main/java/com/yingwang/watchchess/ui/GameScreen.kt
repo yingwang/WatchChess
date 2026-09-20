@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -121,11 +123,17 @@ private data class Difficulty(
 // 一直是时间不是结点；二是中级与高级都停在第 16 层，多花的六秒一层都没多搜，这两档
 // 其实一样强。2026-09-20 殿下也说偏慢。
 // 所以改成让结点数真正生效，时间只当兜底，四档按大约三到四倍递进，每档差两层上下。
+//
+// 2026-09-20 殿下说高级等得不够久、还能更难，于是又量了一轮，同一个中局局面：
+//   二十五万结点  五点九秒  第 13 层   （原来的高级）
+//   六十万结点    十五秒    第 15 层
+//   一百二十万    二十五秒  第 15 层   （多花十秒，一层没多搜）
+// 所以高级定在六十万、十五秒：多等九秒换两层，再往上就不划算了。
 private val DIFFICULTIES = listOf(
     Difficulty(R.string.level_beginner, depth = 3, timeMs = 800, nodes = 2_000, spreadCp = 60),
     Difficulty(R.string.level_easy, depth = 5, timeMs = 1500, nodes = 20_000, spreadCp = 30),
     Difficulty(R.string.level_medium, depth = 6, timeMs = 3000, nodes = 80_000, spreadCp = 15),
-    Difficulty(R.string.level_hard, depth = 8, timeMs = 7000, nodes = 250_000, spreadCp = 8),
+    Difficulty(R.string.level_hard, depth = 8, timeMs = 15000, nodes = 600_000, spreadCp = 8),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -208,6 +216,10 @@ private class GameSounds(context: Context) {
 fun GameScreen() {
     var screen by remember { mutableStateOf("menu") } // menu | game
     var diffIdx by remember { mutableIntStateOf(1) }
+    // 人执哪一方。象棋红先，所以执黑就是后手，开局要先让引擎走一步。
+    var playerColor by remember { mutableStateOf(PieceColor.RED) }
+    // startGame 里没法直接叫 aiMove（它定义在后面），用一个计数触发。
+    var aiMoveTrigger by remember { mutableIntStateOf(0) }
 
     var board by remember { mutableStateOf(Board.createInitialBoard()) }
     var selectedPos by remember { mutableStateOf<Position?>(null) }
@@ -263,9 +275,10 @@ fun GameScreen() {
         }
     }
 
-    fun startGame(difficulty: Int) {
+    fun startGame(difficulty: Int, side: PieceColor) {
         searches.invalidate()
         diffIdx = difficulty
+        playerColor = side
         val d = DIFFICULTIES[difficulty]
         val qDepth = if (d.depth >= 6) 3 else 2
         ai = ChessAI(maxDepth = d.depth, timeLimit = d.timeMs, quiescenceDepth = qDepth)
@@ -276,6 +289,8 @@ fun GameScreen() {
         playedFrom.clear(); positionHistory = listOf(board.toFen())
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
+        // 象棋红先。人执黑就是后手，开局得先让引擎替红走一步。
+        if (side == PieceColor.BLACK) aiMoveTrigger++
     }
 
     /** 将死和困毙可立即判断；重复须交给引擎检查完整棋谱及长将、长捉责任。 */
@@ -344,7 +359,7 @@ fun GameScreen() {
     fun undo() {
         if (aiThinking || undoStack.size < 2) return
         val playerSnap = undoStack[undoStack.size - 2]
-        board = playerSnap.board; board.currentPlayer = PieceColor.RED
+        board = playerSnap.board; board.currentPlayer = playerColor
         undoStack = undoStack.dropLast(2); moveHistory = moveHistory.dropLast(2)
         positionHistory = positionHistory.dropLast(2)
         lastMove = moveHistory.lastOrNull(); selectedPos = null; legalMoves = emptyList()
@@ -375,16 +390,29 @@ fun GameScreen() {
         } else { selectedPos = null; legalMoves = emptyList() }
     }
 
+    // 执黑开局时让引擎先走一步。startGame 里叫不到 aiMove（它定义在后面），
+    // 所以那边只把计数加一，由这个效应接住。
+    LaunchedEffect(aiMoveTrigger) {
+        if (aiMoveTrigger > 0 && screen == "game" && board.currentPlayer != playerColor) aiMove()
+    }
+
     // ── 表冠光标 ───────────────────────────────────────────────────────────
     // 走一步棋分两段，两段都靠转表冠挑、点屏幕定。
     // 第一段在「有合法着法的己方棋子」之间跳，用棋盘从上到下、从左到右的固定顺序，
     // 固定顺序手才记得住要转多远。第二段在选中那只子的合法落点之间跳，按绕着它
     // 转一圈的角度排，转起来像围着它看一遍。
     // 因为两段的候选都只含合法项，这套操作里走不出一步违规的棋，也就不需要报错。
-    val movablePieces = remember(board, gameOverMsg, aiThinking) {
-        if (gameOverMsg != null || aiThinking || board.currentPlayer != PieceColor.RED) emptyList()
+    val movablePieces = remember(board, gameOverMsg, aiThinking, playerColor) {
+        if (gameOverMsg != null || aiThinking || board.currentPlayer != playerColor) emptyList()
         else board.getAllLegalMoves().map { it.from }.distinct()
-            .sortedWith(compareBy({ it.row }, { it.col }))
+            // 按屏幕上看到的顺序排，不是按棋盘内部坐标排。执黑时整盘是翻过来画的，
+            // 若仍按内部坐标排，转表冠会觉得光标在乱跳。
+            .sortedWith(
+                compareBy(
+                    { flipRow(it.row, playerColor == PieceColor.BLACK) },
+                    { flipCol(it.col, playerColor == PieceColor.BLACK) },
+                ),
+            )
     }
     val destinations = remember(selectedPos, legalMoves) {
         val from = selectedPos
@@ -427,7 +455,11 @@ fun GameScreen() {
     }
 
     if (screen == "menu") {
-        MainMenu(onStart = { startGame(it) }, selectedIdx = diffIdx)
+        MainMenu(
+            onStart = { idx, side -> startGame(idx, side) },
+            selectedIdx = diffIdx,
+            selectedSide = playerColor,
+        )
     } else {
         Box(Modifier.fillMaxSize()) {
             // Board layer
@@ -438,6 +470,8 @@ fun GameScreen() {
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
                 menuShowing = showMenu,
                 captured = capturedPieces,
+                flipped = playerColor == PieceColor.BLACK,
+                playerColor = playerColor,
                 diffName = stringResource(DIFFICULTIES[diffIdx].nameRes),
                 thinkingLabel = stringResource(R.string.thinking, stringResource(DIFFICULTIES[diffIdx].nameRes)),
                 tapToReturn = stringResource(R.string.tap_to_return),
@@ -469,30 +503,100 @@ fun GameScreen() {
 
 // ── Main Menu ──────────────────────────────────────────────────────────────
 
+/**
+ * 开局这一屏：先挑难度，执哪一方摆在下面。
+ *
+ * 殿下 2026-09-20 问过先选难度还是先选红黑，她自己也倾向先选难度，我同意。
+ * 难度是每一局都可能改的东西，执哪一方多半定下来就不动了，所以常改的放前面，
+ * 点难度那一下直接开局，不必为了一个很少改的选项多走一屏。
+ *
+ * 红黑那一行做成两个并排的按钮，选中的那个亮起来，不占一整屏。
+ * 这一屏跟局内菜单一样能滚、能用表冠滚，因为四个难度加一行红黑已经超过圆屏的高度。
+ */
 @Composable
-private fun MainMenu(onStart: (Int) -> Unit, selectedIdx: Int) {
+private fun MainMenu(
+    onStart: (Int, PieceColor) -> Unit,
+    selectedIdx: Int,
+    selectedSide: PieceColor,
+) {
+    var side by remember(selectedSide) { mutableStateOf(selectedSide) }
+    val scrollState = rememberScrollState()
+    val focus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
     Box(
         Modifier.fillMaxSize().background(Color(0xFF1A1208)),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = 32.dp),
+            modifier = Modifier
+                .onRotaryScrollEvent {
+                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
+                    true
+                }
+                .focusRequester(focus)
+                .focusable()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 30.dp, vertical = 12.dp),
         ) {
-            Text(stringResource(R.string.app_name), color = Color(0xFFD4A960), fontSize = 22.sp)
-            Spacer(Modifier.height(14.dp))
+            // 不放标题。四个难度加一行红黑已经顶满这块圆屏，标题一摆，红黑那行就被挤到
+            // 屏幕外面，得滚一下才看得见，而那是开局前就该一眼看到的东西。应用叫什么，
+            // 表盘上点进来的时候已经看过了。
             DIFFICULTIES.forEachIndexed { idx, diff ->
                 val label = stringResource(diff.nameRes)
                 Button(
-                    onClick = { onStart(idx) },
-                    modifier = Modifier.fillMaxWidth().height(36.dp).padding(vertical = 2.dp),
+                    onClick = { onStart(idx, side) },
+                    modifier = Modifier.fillMaxWidth().height(34.dp).padding(vertical = 2.dp),
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = if (idx == selectedIdx) Color(0xFFCC2222) else Color(0xFF3D2B1F),
                     ),
                     shape = RoundedCornerShape(6.dp),
                 ) { Text(label, color = Color.White, fontSize = 13.sp) }
             }
+
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth()) {
+                SideBtn(
+                    label = stringResource(R.string.side_red),
+                    selected = side == PieceColor.RED,
+                    accent = RedPiece,
+                    modifier = Modifier.weight(1f),
+                ) { side = PieceColor.RED }
+                Spacer(Modifier.width(6.dp))
+                SideBtn(
+                    label = stringResource(R.string.side_black),
+                    selected = side == PieceColor.BLACK,
+                    accent = Color(0xFF111111),
+                    modifier = Modifier.weight(1f),
+                ) { side = PieceColor.BLACK }
+            }
         }
+    }
+}
+
+@Composable
+private fun SideBtn(
+    label: String,
+    selected: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(34.dp),
+        colors = ButtonDefaults.buttonColors(
+            backgroundColor = if (selected) accent else Color(0xFF2B1B0E),
+        ),
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Text(
+            label,
+            color = if (selected) Color.White else Color(0xFF8A7A5A),
+            fontSize = 12.sp,
+        )
     }
 }
 
@@ -584,6 +688,8 @@ private fun BoardCanvas(
     pickingDestination: Boolean,
     menuShowing: Boolean,
     captured: List<Piece>,
+    flipped: Boolean,
+    playerColor: PieceColor,
     diffName: String,
     thinkingLabel: String,
     tapToReturn: String,
@@ -627,19 +733,19 @@ private fun BoardCanvas(
         val ox = (size.width - bw) / 2f; val oy = (size.height - bh) / 2f
 
         drawBoard(ox, oy, cell)
-        drawSelection(ox, oy, cell, selectedPos)
-        drawLegalMoves(ox, oy, cell, legalMoves)
-        drawPieces(ox, oy, cell, board)
+        drawSelection(ox, oy, cell, selectedPos, flipped)
+        drawLegalMoves(ox, oy, cell, legalMoves, flipped)
+        drawPieces(ox, oy, cell, board, flipped)
         drawCaptured(ox, cell, captured)
         // 标出刚走的那一步，画在棋子上面才看得见。对方是蓝的，自己是绿的。
         lastMove?.let {
             drawMoveMarker(ox, oy, cell, it,
-                if (it.piece.color == PieceColor.BLACK) OpponentMoveColor else OwnMoveColor)
+                if (it.piece.color == playerColor) OwnMoveColor else OpponentMoveColor, flipped)
         }
-        drawCursor(ox, oy, cell, cursorPos, pickingDestination)
+        drawCursor(ox, oy, cell, cursorPos, pickingDestination, flipped)
 
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
-            drawCheckGlow(ox, oy, cell, board)
+            drawCheckGlow(ox, oy, cell, board, flipped)
 
         drawStatusLines(cell, diffName, thinkingLabel, elapsedSec, aiThinking)
 
@@ -667,11 +773,19 @@ private fun DrawScope.drawBoard(ox: Float, oy: Float, c: Float) {
     drawContext.canvas.nativeCanvas.drawText("漢界", ox + 6 * c, ry, p)
 }
 
-private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, board: Board) {
+/**
+ * 执黑时整盘上下左右翻过来，好让自己的子落在靠近手腕的那一侧，跟真在桌边坐着一样。
+ * 只翻画面，不翻棋盘本身：操作是转表冠挑、点任意处确认，跟坐标无关，所以不必跟着翻。
+ */
+private fun flipRow(row: Int, flipped: Boolean) = if (flipped) 9 - row else row
+private fun flipCol(col: Int, flipped: Boolean) = if (flipped) 8 - col else col
+
+private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, board: Board, flipped: Boolean) {
     val r = c * 0.43f
     val tp = android.graphics.Paint().apply { textSize = c * 0.50f; textAlign = android.graphics.Paint.Align.CENTER; typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD); isAntiAlias = true }
     for (piece in board.getAllPieces()) {
-        val cx = ox + piece.position.col * c; val cy = oy + piece.position.row * c
+        val cx = ox + flipCol(piece.position.col, flipped) * c
+        val cy = oy + flipRow(piece.position.row, flipped) * c
         val ctr = Offset(cx, cy); val red = piece.color == PieceColor.RED
         drawCircle(Color(0xFFF5E6C8), r, ctr)
         drawCircle(if (red) RedPiece else BlackPiece, r, ctr, style = Stroke(1.8f))
@@ -682,14 +796,14 @@ private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, board: Board) {
     }
 }
 
-private fun DrawScope.drawSelection(ox: Float, oy: Float, c: Float, pos: Position?) {
+private fun DrawScope.drawSelection(ox: Float, oy: Float, c: Float, pos: Position?, flipped: Boolean) {
     if (pos == null) return
-    drawCircle(SelectedRing, c * 0.47f, Offset(ox + pos.col * c, oy + pos.row * c), style = Stroke(2.5f))
+    drawCircle(SelectedRing, c * 0.47f, Offset(ox + flipCol(pos.col, flipped) * c, oy + flipRow(pos.row, flipped) * c), style = Stroke(2.5f))
 }
 
-private fun DrawScope.drawLegalMoves(ox: Float, oy: Float, c: Float, moves: List<Move>) {
+private fun DrawScope.drawLegalMoves(ox: Float, oy: Float, c: Float, moves: List<Move>, flipped: Boolean) {
     for (m in moves) {
-        val ctr = Offset(ox + m.to.col * c, oy + m.to.row * c)
+        val ctr = Offset(ox + flipCol(m.to.col, flipped) * c, oy + flipRow(m.to.row, flipped) * c)
         if (m.capturedPiece != null) drawCircle(SelectedRing, c * 0.47f, ctr, style = Stroke(2f))
         else drawCircle(LegalDot, c * 0.14f, ctr)
     }
@@ -700,9 +814,9 @@ private fun DrawScope.drawLegalMoves(ox: Float, oy: Float, c: Float, moves: List
  * 挑子那一段画一圈粗环；挑落点那一段在绿点上再叠一个实心点，与旁边没被选中的
  * 落点区分开。
  */
-private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?, pickingDestination: Boolean) {
+private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?, pickingDestination: Boolean, flipped: Boolean) {
     if (pos == null) return
-    val ctr = Offset(ox + pos.col * c, oy + pos.row * c)
+    val ctr = Offset(ox + flipCol(pos.col, flipped) * c, oy + flipRow(pos.row, flipped) * c)
     if (pickingDestination) {
         drawCircle(CursorRing, c * 0.20f, ctr)
         drawCircle(CursorRing, c * 0.40f, ctr, style = Stroke(2.5f))
@@ -806,10 +920,10 @@ private fun DrawScope.drawStatusLines(
  * 绿色跟光标是同一族，但两者不会同时出现：轮到自己时盘上标的是对方刚走的那一步，
  * 是蓝的；自己这一步的绿圈只在对方思考的那几秒里看得见，那时候光标是隐着的。
  */
-private fun DrawScope.drawMoveMarker(ox: Float, oy: Float, c: Float, move: Move?, color: Color) {
+private fun DrawScope.drawMoveMarker(ox: Float, oy: Float, c: Float, move: Move?, color: Color, flipped: Boolean) {
     if (move == null) return
-    val a = Offset(ox + move.from.col * c, oy + move.from.row * c)
-    val b = Offset(ox + move.to.col * c, oy + move.to.row * c)
+    val a = Offset(ox + flipCol(move.from.col, flipped) * c, oy + flipRow(move.from.row, flipped) * c)
+    val b = Offset(ox + flipCol(move.to.col, flipped) * c, oy + flipRow(move.to.row, flipped) * c)
 
     // 起点一个细圈，标明它原先在哪儿
     drawCircle(color, c * 0.30f, a, style = Stroke(2.5f))
@@ -817,9 +931,9 @@ private fun DrawScope.drawMoveMarker(ox: Float, oy: Float, c: Float, move: Move?
     drawCircle(color, c * 0.50f, b, style = Stroke(3.5f))
 }
 
-private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board) {
+private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board, flipped: Boolean) {
     val g = board.getAllPieces().find { it.type == PieceType.GENERAL && it.color == board.currentPlayer } ?: return
-    drawCircle(Color(0x55FF0000), c * 0.52f, Offset(ox + g.position.col * c, oy + g.position.row * c))
+    drawCircle(Color(0x55FF0000), c * 0.52f, Offset(ox + flipCol(g.position.col, flipped) * c, oy + flipRow(g.position.row, flipped) * c))
 }
 
 private fun DrawScope.drawGameOver(msg: String, tapToReturn: String, c: Float) {
