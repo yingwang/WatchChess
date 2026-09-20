@@ -130,6 +130,7 @@ class FairyEngine(private val context: Context) {
         moveHistory: List<Move>,
         nodeLimit: Long,
         timeLimitMs: Long,
+        spreadCp: Int,
     ): Move? = withContext(Dispatchers.IO) {
         if (!isRunning) return@withContext null
         try {
@@ -139,20 +140,24 @@ class FairyEngine(private val context: Context) {
 
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeLimitMs + SEARCH_GRACE_MS)
             var best: String? = null
+            // multipv 序号到（分数，着法）。同一序号后来的行覆盖先前的，留下的是最深一层的结果。
+            val lines = HashMap<Int, Pair<Int, String>>()
             while (System.nanoTime() < deadline) {
                 val line = output?.readUntil(deadline) ?: break
                 if (line.startsWith("bestmove")) {
                     best = line.split(" ").getOrNull(1)
                     break
                 }
+                parseInfo(line)?.let { (idx, scored) -> lines[idx] = scored }
             }
             if (best == null) {
                 lastError = "engine search timed out or ended before bestmove"
                 stop() // 防止迟到的 bestmove 被下一次搜索误读。
                 return@withContext null
             }
+            val chosen = pickWithSpread(lines, best, spreadCp)
             // 不把坐标合法但走法违规的输出交给界面。
-            board.getAllLegalMoves().find { it.toUci() == best }
+            board.getAllLegalMoves().find { it.toUci() == chosen }
         } catch (e: Exception) {
             lastError = "${e.javaClass.simpleName}: ${e.message}"
             Log.w(TAG, "findBestMove failed", e)
@@ -162,6 +167,40 @@ class FairyEngine(private val context: Context) {
     }
 
     // ── 私有 ────────────────────────────────────────────────────────────────
+
+    /**
+     * 从一行 info 里取出 multipv 序号、分数和首着。取不到就返回 null。
+     *
+     * 只认 score cp，不认 score mate。有杀着的时候本来就不该为了花样去挑别的走法。
+     */
+    private fun parseInfo(line: String): Pair<Int, Pair<Int, String>>? {
+        if (!line.startsWith("info ") || " pv " !in line) return null
+        val tok = line.split(" ")
+        fun after(key: String): String? = tok.indexOf(key).takeIf { it >= 0 && it + 1 < tok.size }?.let { tok[it + 1] }
+        val idx = after("multipv")?.toIntOrNull() ?: 1
+        if (after("score") != "cp") return null
+        val cp = after("cp")?.toIntOrNull() ?: return null
+        val move = tok.getOrNull(tok.indexOf("pv") + 1) ?: return null
+        if (move.length < 4) return null
+        return idx to (cp to move)
+    }
+
+    /**
+     * 在跟最优着相差不超过 spreadCp 的那些着法里随机挑一个。
+     *
+     * 殿下 2026-09-20 说「同一个局面每次走子不一样」。引擎是确定性的，同一局面永远回同一
+     * 着，于是每局开头都一模一样。开了 MultiPV 之后它会一并报出前几条线路，这里就在
+     * 「跟最优着差不多好」的那几着里抽一个。差的上限按难度给：低档放得宽，既有花样也确实
+     * 弱一些；高档收得紧，基本还是走最优着。
+     *
+     * 取不到候选就照用引擎给的 bestmove，绝不为了花样而走坏棋。
+     */
+    private fun pickWithSpread(lines: Map<Int, Pair<Int, String>>, fallback: String, spreadCp: Int): String {
+        if (spreadCp <= 0 || lines.isEmpty()) return fallback
+        val topScore = lines.values.maxOf { it.first }
+        val pool = lines.values.filter { it.first >= topScore - spreadCp }.map { it.second }.distinct()
+        return if (pool.isEmpty()) fallback else pool.random()
+    }
 
     private fun send(cmd: String) {
         writer?.apply { write(cmd); write("\n"); flush() }

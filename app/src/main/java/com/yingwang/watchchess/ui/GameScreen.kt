@@ -100,6 +100,8 @@ private data class Difficulty(
     val depth: Int,
     val timeMs: Long,
     val nodes: Long,
+    /** 挑着法时容许比最优着差多少（百分兵）。放得越宽花样越多，棋也越松。 */
+    val spreadCp: Int,
 )
 
 // 这四组数字是在表上量出来的，不是估的。中局局面下实测：
@@ -111,10 +113,10 @@ private data class Difficulty(
 // 其实一样强。2026-09-20 殿下也说偏慢。
 // 所以改成让结点数真正生效，时间只当兜底，四档按大约三到四倍递进，每档差两层上下。
 private val DIFFICULTIES = listOf(
-    Difficulty("入门", depth = 3, timeMs = 800, nodes = 2_000),
-    Difficulty("初级", depth = 5, timeMs = 1500, nodes = 20_000),
-    Difficulty("中级", depth = 6, timeMs = 3000, nodes = 80_000),
-    Difficulty("高级", depth = 8, timeMs = 7000, nodes = 250_000),
+    Difficulty("入门", depth = 3, timeMs = 800, nodes = 2_000, spreadCp = 150),
+    Difficulty("初级", depth = 5, timeMs = 1500, nodes = 20_000, spreadCp = 70),
+    Difficulty("中级", depth = 6, timeMs = 3000, nodes = 80_000, spreadCp = 30),
+    Difficulty("高级", depth = 8, timeMs = 7000, nodes = 250_000, spreadCp = 10),
 )
 
 private data class Snapshot(val board: Board, val move: Move)
@@ -164,6 +166,10 @@ private class GameSounds(context: Context) {
         .build()
     private val moveId = pool.load(context, R.raw.move_piece, 1)
     private val captureId = pool.load(context, R.raw.capture_piece, 1)
+    // 报子音。单字「将」在普通话里有两读，合成出来听着含糊，所以报的是「将军」，
+    // 也是棋盘上真正会喊的那一句。
+    private val sayCaptureId = pool.load(context, R.raw.say_capture, 1)
+    private val sayCheckId = pool.load(context, R.raw.say_check, 1)
     private val bgm = android.media.MediaPlayer.create(context, R.raw.background_music)?.apply {
         isLooping = true; setVolume(0.15f, 0.15f)
     }
@@ -180,6 +186,8 @@ private class GameSounds(context: Context) {
     fun toggleSfx(): Boolean { sfxOn = !sfxOn; return sfxOn }
     fun playMove() { if (sfxOn) pool.play(moveId, 0.6f, 0.6f, 1, 0, 1f) }
     fun playCapture() { if (sfxOn) pool.play(captureId, 0.8f, 0.8f, 1, 0, 1f) }
+    fun sayCapture() { if (sfxOn) pool.play(sayCaptureId, 1f, 1f, 2, 0, 1f) }
+    fun sayCheck() { if (sfxOn) pool.play(sayCheckId, 1f, 1f, 2, 0, 1f) }
     fun release() { bgm?.release(); pool.release() }
 }
 
@@ -264,7 +272,7 @@ fun GameScreen() {
         scope.launch {
             val d = DIFFICULTIES[diffIdx]
             val move = if (engineReady) {
-                engine.findBestMove(board, moveHistory, d.nodes, d.timeMs)
+                engine.findBestMove(board, moveHistory, d.nodes, d.timeMs, d.spreadCp)
                     // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
                     ?: withContext(Dispatchers.Default) { ai.findBestMove(board, moveHistory) }
             } else {
@@ -274,10 +282,11 @@ fun GameScreen() {
                 undoStack = undoStack + Snapshot(board, move)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
                 board = nb; lastMove = move; moveHistory = moveHistory + move
-                if (move.isCapture()) { sounds.playCapture(); vibrateDouble(context) }
+                if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
                 else { sounds.playMove(); vibrate(context) }
                 gameOverMsg = checkGameOver(board)
                 if (gameOverMsg != null) vibrate(context, 100)
+                else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
             }
             aiThinking = false
         }
@@ -300,10 +309,13 @@ fun GameScreen() {
             val nb = board.makeMove(moveToMake); nb.currentPlayer = board.currentPlayer.opposite()
             board = nb; lastMove = moveToMake; moveHistory = moveHistory + moveToMake
             selectedPos = null; legalMoves = emptyList(); moveCount++
-            if (moveToMake.isCapture()) { sounds.playCapture(); vibrateDouble(context) }
+            if (moveToMake.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
             else { sounds.playMove(); vibrate(context) }
             gameOverMsg = checkGameOver(board)
-            if (gameOverMsg != null) vibrate(context, 100) else aiMove()
+            if (gameOverMsg != null) { vibrate(context, 100) } else {
+                if (board.isInCheck(board.currentPlayer)) sounds.sayCheck()
+                aiMove()
+            }
             return
         }
         val piece = board.getPiece(pos)
@@ -329,6 +341,10 @@ fun GameScreen() {
         else legalMoves.map { it.to }
             .sortedBy { atan2((it.row - from.row).toFloat(), (it.col - from.col).toFloat()) }
     }
+    // 被吃的子直接从着法历史里推，不另存一份状态，这样悔棋的时候它自然跟着回退，
+    // 不会出现棋子回到盘上、侧边却还挂着的情形。
+    val capturedPieces = remember(moveHistory) { moveHistory.mapNotNull { it.capturedPiece } }
+
     val candidates = if (selectedPos == null) movablePieces else destinations
     val cursorPos = candidates.getOrNull(cursorIdx.coerceIn(0, maxOf(0, candidates.size - 1)))
 
@@ -369,6 +385,7 @@ fun GameScreen() {
                 lastMove = lastMove, aiThinking = aiThinking, gameOverMsg = gameOverMsg,
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
                 menuShowing = showMenu,
+                captured = capturedPieces,
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
@@ -510,6 +527,7 @@ private fun BoardCanvas(
     cursorPos: Position?,
     pickingDestination: Boolean,
     menuShowing: Boolean,
+    captured: List<Piece>,
     onConfirm: () -> Unit,
     onRotary: (Float) -> Boolean,
     onLongPress: () -> Unit,
@@ -552,6 +570,7 @@ private fun BoardCanvas(
         drawSelection(ox, oy, cell, selectedPos)
         drawLegalMoves(ox, oy, cell, legalMoves)
         drawPieces(ox, oy, cell, board)
+        drawCaptured(ox, cell, captured)
         // 标出刚走的那一步，画在棋子上面才看得见。对方是蓝的，自己是绿的。
         lastMove?.let {
             drawMoveMarker(ox, oy, cell, it,
@@ -632,6 +651,55 @@ private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?,
         drawCircle(CursorRing, c * 0.40f, ctr, style = Stroke(2.5f))
     } else {
         drawCircle(CursorRing, c * 0.52f, ctr, style = Stroke(3.5f))
+    }
+}
+
+/**
+ * 把已经被吃掉的子排在棋盘两侧。
+ *
+ * 殿下 2026-09-20 要的：按被吃的先后排，红黑分列左右，好一眼看出双方损失了什么。
+ * 左边一列是黑方被吃掉的（都是黑子），右边一列是红方被吃掉的。
+ *
+ * 位置上得迁就圆屏。棋盘已经铺到贴边，两侧各只剩六十几像素，而且越往上下越窄：在
+ * 列心那个横坐标上，圆屏只在中间那一段有高度，所以这一列从屏幕竖直中点往两头长，
+ * 长到装不下就不再画，宁可少画几个也不要把子甩到圆外面去。
+ */
+private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>) {
+    if (captured.isEmpty()) return
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+    val radius = size.width / 2f
+    val r = c * 0.30f                       // 小一号，够看清字就行
+    val step = r * 2.1f
+
+    for ((side, colour) in listOf(PieceColor.BLACK to BlackPiece, PieceColor.RED to RedPiece)) {
+        val list = captured.filter { it.color == side }
+        if (list.isEmpty()) continue
+        // 黑子摆左边，红子摆右边
+        val x = if (side == PieceColor.BLACK) (ox - c * 0.48f) / 2f else size.width - (size.width - (ox + 8 * c + c * 0.48f)) / 2f
+        // 这个横坐标上圆屏还剩多少高度
+        val halfSpan = kotlin.math.sqrt((radius * radius - (x - cx) * (x - cx)).coerceAtLeast(0f)) - r
+        if (halfSpan <= 0f) continue
+        val fits = ((halfSpan * 2f) / step).toInt().coerceAtLeast(1)
+        val shown = list.takeLast(fits)     // 装不下就留最近被吃的那些
+        val top = cy - (shown.size - 1) * step / 2f
+
+        val tp = android.graphics.Paint().apply {
+            textSize = r * 1.15f
+            textAlign = android.graphics.Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            isAntiAlias = true
+            color = if (side == PieceColor.RED) 0xFFCC2222.toInt() else 0xFF1A1A1A.toInt()
+        }
+        val fm = tp.fontMetrics
+        for ((i, piece) in shown.withIndex()) {
+            val y = top + i * step
+            drawCircle(Color(0xFFF5E6C8), r, Offset(x, y))
+            drawCircle(colour, r, Offset(x, y), style = Stroke(1.2f))
+            drawContext.canvas.nativeCanvas.drawText(
+                piece.type.getDisplayName(piece.color), x, y - (fm.ascent + fm.descent) / 2, tp,
+            )
+        }
     }
 }
 
