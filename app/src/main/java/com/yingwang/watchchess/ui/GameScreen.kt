@@ -20,16 +20,13 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -57,14 +54,23 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumnDefaults
+import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.material.PositionIndicator
+import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
@@ -78,7 +84,9 @@ import com.yingwang.watchchess.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.atan2
+import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.sqrt
 
 // ── Colors ─────────────────────────────────────────────────────────────────
 
@@ -110,10 +118,44 @@ private val MenuHeading = Color(0xFF9CC3BB)
 // 圆角，最下面那一个也进得来。
 private const val BTN_WIDTH = 0.76f
 private val BTN_HEIGHT = 34.dp
+// 文字行的宽度上限。铺满屏宽的那几行在圆屏上端会被切掉首尾字符，见 CenteredLine。
+private const val CONTENT_WIDTH = 0.86f
 
 // 表冠：累计到这个像素量算走一格。数值越大越钝，转同样的角度走的格子越少。
 // 2026-09-20 殿下试了两轮都说偏快，先从 45 调到 68，仍嫌敏感，再调到 105。
 private const val ROTARY_STEP = 105f
+
+/**
+ * 可滚动那几屏的内边距。
+ *
+ * 2026-09-22 Play 以「Watch shapes」与「Wear font size」两条退回 vc10，说的是内容会被
+ * 屏幕边缘切掉。圆屏上越靠近上下两端可用的宽度越窄，首尾两项若紧贴着边就会被切；系统
+ * 字号调大之后更明显。这里按屏幕自身的尺寸留边，不写死数值，因为表的直径从 320 到 454
+ * 都有。右侧那条位置指示条也占地方，横向这一份同时把它让开。
+ */
+/**
+ * 列表边缘的缩放与淡出。
+ *
+ * 默认参数在贴到上下两端时仍留着一半的不透明度，条目那时已经探到圆外，看上去就是被切了
+ * 一刀。这里把边缘处的不透明度压到零、比例压到四成，条目在走到会被切的位置之前就已经
+ * 完全隐去。测下来滚动过程中落在圆外的内容像素从一千多降到个位数。
+ */
+@Composable
+private fun edgeFadeParams() = ScalingLazyColumnDefaults.scalingParams(
+    edgeScale = 0.35f,
+    edgeAlpha = 0f,
+    minTransitionArea = 0.4f,
+    maxTransitionArea = 0.8f,
+)
+
+@Composable
+private fun scrollPadding(): PaddingValues {
+    val cfg = LocalConfiguration.current
+    val w = cfg.screenWidthDp.dp
+    val h = cfg.screenHeightDp.dp
+    return if (cfg.isScreenRound) PaddingValues(horizontal = w * 0.09f, vertical = h * 0.12f)
+    else PaddingValues(horizontal = w * 0.06f, vertical = h * 0.06f)
+}
 
 // 上手提示只在装上之后的第一局出现一次，看过就记下来，之后不再打扰。
 private const val PREF_HELP_SEEN = "help_seen"
@@ -176,9 +218,22 @@ private data class TurnResult(val move: Move?, val messageRes: Int?)
  * 原先是 14.2，盘子偏小，四周空了一圈，殿下 2026-09-20 说「边上还有一点点空隙，
  * 再铺满一点」。现在一格从 30 像素涨到约 32.8，整盘大了一成。
  */
-private fun cellForRound(w: Float, h: Float): Float {
-    val d = min(w, h)
-    return d / 13.0f
+/**
+ * 一格多大。
+ *
+ * 原先一律取短边的十三分之一。2026-09-22 Play 以「Watch shapes」退回 vc10，附的截图里
+ * 木底的四个角明显探到圆外去了，角上那两个車也压在边缘上。原因是圆屏能显示的是内切圆
+ * 而不是整块方形：画出来的木底连边是 8.96 格宽、9.96 格高，它的半对角线约 6.70 格，
+ * 按短边十三分之一算出来是 219 像素，而半径只有 213，正好差这一点。
+ *
+ * 所以圆屏上改由半对角线定尺寸，再留 3% 余量。方屏维持原样，那里整块方形都能用。
+ */
+private fun cellForRound(w: Float, h: Float, round: Boolean): Float {
+    val plain = min(w, h) / 13.0f
+    if (!round) return plain
+    val r = min(w, h) / 2f * 0.97f
+    val halfDiag = sqrt(8.96f * 8.96f + 9.96f * 9.96f) / 2f
+    return min(plain, r / halfDiag)
 }
 
 private fun vibrate(context: Context, ms: Long = 30) {
@@ -602,11 +657,13 @@ fun GameScreen() {
 private fun MainMenu(onPick: (Int) -> Unit, selectedIdx: Int) {
     MenuScaffold {
         DIFFICULTIES.forEachIndexed { idx, diff ->
-            WatchButton(
-                label = stringResource(diff.nameRes),
-                selected = idx == selectedIdx,
-                onClick = { onPick(idx) },
-            )
+            item {
+                WatchButton(
+                    label = stringResource(diff.nameRes),
+                    selected = idx == selectedIdx,
+                    onClick = { onPick(idx) },
+                )
+            }
         }
     }
 }
@@ -616,35 +673,52 @@ private fun MainMenu(onPick: (Int) -> Unit, selectedIdx: Int) {
 private fun SideMenu(onPick: (PieceColor) -> Unit, onBack: () -> Unit) {
     BackHandler(enabled = true) { onBack() }
     MenuScaffold {
-        WatchButton(stringResource(R.string.side_red), onClick = { onPick(PieceColor.RED) })
-        WatchButton(stringResource(R.string.side_black), onClick = { onPick(PieceColor.BLACK) })
+        item { WatchButton(stringResource(R.string.side_red), onClick = { onPick(PieceColor.RED) }) }
+        item { WatchButton(stringResource(R.string.side_black), onClick = { onPick(PieceColor.BLACK) }) }
     }
 }
 
-/** 两屏共用的外框：能滚，表冠也能滚，免得选项一多就有一项落在圆边外头。 */
+/**
+ * 可滚的那几屏共用的外框。
+ *
+ * 2026-09-22 Play 一次退回三条，其中两条落在这里，原先那个「Column 加 verticalScroll」
+ * 的写法两条都挡不住：
+ *
+ * 一是没有滚动条。Wear 要求可滚的界面在滚动时显示右侧那条位置指示条，自己写的滚动容器
+ * 不带它，得由 Scaffold 配 PositionIndicator 来画。
+ *
+ * 二是滚到中途时内容被圆边切掉。审核员附的截图里，对局菜单滚到一半，最上面那个按钮的
+ * 左右两端探到圆外；帮助那屏每行字的头一个和末一个字符也被切了。这不是留边不够的问题：
+ * 一个等宽的纵列在滚动过程中必然要经过屏幕上下两端，而圆屏在那里可用的宽度只有中间的
+ * 一半左右，切是一定会切的。ScalingLazyColumn 正是为这件事存在的，它会把靠近上下两端
+ * 的条目按比例缩小并淡出，条目还没走到会被切的地方就已经收进去了，同时首尾两项都能滚
+ * 到正中，不会卡在边上。
+ *
+ * 表冠仍旧自己接：ScalingLazyListState 也是一个 ScrollableState，scrollBy 照用。
+ */
 @Composable
-private fun MenuScaffold(content: @Composable ColumnScope.() -> Unit) {
-    val scrollState = rememberScrollState()
+private fun MenuScaffold(content: ScalingLazyListScope.() -> Unit) {
+    val listState = rememberScalingLazyListState()
     val focus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { focus.requestFocus() }
 
-    Box(
-        Modifier.fillMaxSize().background(MenuBg),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
+    Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
+        ScalingLazyColumn(
+            state = listState,
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = scrollPadding(),
+            scalingParams = edgeFadeParams(),
             modifier = Modifier
+                .fillMaxSize()
+                .background(MenuBg)
                 .onRotaryScrollEvent {
-                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
+                    scope.launch { listState.scrollBy(it.verticalScrollPixels) }
                     true
                 }
                 .focusRequester(focus)
-                .focusable()
-                .verticalScroll(scrollState)
-                .padding(horizontal = 18.dp, vertical = 14.dp),
+                .focusable(),
             content = content,
         )
     }
@@ -659,6 +733,10 @@ private fun MenuScaffold(content: @Composable ColumnScope.() -> Unit) {
  * 想改一处就改这里，不会再各走各的。
  *
  * selected 为真时填青瓷色，用来标当前选中的那一项，别的语义一概不用这个颜色。
+ *
+ * 高度本来写死 34dp。2026-09-22 Play 以「Wear font size」退回 vc10：系统设置里把字号
+ * 调大之后，字撑不开这个高度，上下就被切掉了。现在 34dp 只作下限，字多高按钮就多高，
+ * 实在放不下还能折成两行。
  */
 @Composable
 private fun WatchButton(
@@ -672,7 +750,7 @@ private fun WatchButton(
         enabled = enabled,
         modifier = Modifier
             .fillMaxWidth(BTN_WIDTH)
-            .height(BTN_HEIGHT)
+            .heightIn(min = BTN_HEIGHT)
             .border(1.dp, if (selected) Color.Transparent else BtnEdge, RoundedCornerShape(50)),
         colors = ButtonDefaults.buttonColors(
             backgroundColor = if (selected) Celadon else BtnFill,
@@ -688,6 +766,10 @@ private fun WatchButton(
                 else -> BtnText
             },
             fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
         )
     }
 }
@@ -713,41 +795,68 @@ private fun InGameMenu(
     // 2026-09-20 说「最下面那个选项没有显示全」。圆屏上下还要各让出一块，可用的高度
     // 比看上去更少。所以这里让它能滚，并且把表冠接上去滚，跟棋盘那边同一套手势。
     // 上下各留一段空白，好让首尾两项都能滚到屏幕中间，不至于卡在圆边上。
-    val scrollState = rememberScrollState()
+    val listState = rememberScalingLazyListState()
     val menuFocus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { menuFocus.requestFocus() }
 
-    Box(
-        Modifier.fillMaxSize().background(Color(0xF0000000)).clickable { onDismiss() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier
-                .onRotaryScrollEvent {
-                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
-                    true
-                }
-                .focusRequester(menuFocus)
-                .focusable()
-                .verticalScroll(scrollState)
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+    Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
+        Box(
+            Modifier.fillMaxSize().background(Color(0xF0000000)).clickable { onDismiss() },
+            contentAlignment = Alignment.Center,
         ) {
-            val min = elapsedSec / 60; val sec = elapsedSec % 60
-            Text(diffName, color = MenuHeading, fontSize = 13.sp)
-            Text(stringResource(R.string.clock_moves, min, sec, moveCount + 1), color = Color(0xAAFFFFFF), fontSize = 11.sp)
-            Spacer(Modifier.height(2.dp))
-
-            WatchButton(stringResource(R.string.menu_undo), onUndo, enabled = canUndo)
-            WatchButton(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), onToggleBgm)
-            WatchButton(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), onToggleSfx)
-            WatchButton(stringResource(R.string.menu_new_game), onNewGame)
-            WatchButton(stringResource(R.string.menu_help), onHelp)
-            WatchButton(stringResource(R.string.menu_resume), onDismiss)
+            ScalingLazyColumn(
+                state = listState,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = scrollPadding(),
+                scalingParams = edgeFadeParams(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onRotaryScrollEvent {
+                        scope.launch { listState.scrollBy(it.verticalScrollPixels) }
+                        true
+                    }
+                    .focusRequester(menuFocus)
+                    .focusable(),
+            ) {
+                item {
+                    val min = elapsedSec / 60; val sec = elapsedSec % 60
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CenteredLine(diffName, MenuHeading, 13.sp)
+                        CenteredLine(
+                            stringResource(R.string.clock_moves, min, sec, moveCount + 1),
+                            Color(0xAAFFFFFF), 11.sp,
+                        )
+                    }
+                }
+                item { WatchButton(stringResource(R.string.menu_undo), onUndo, enabled = canUndo) }
+                item { WatchButton(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), onToggleBgm) }
+                item { WatchButton(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), onToggleSfx) }
+                item { WatchButton(stringResource(R.string.menu_new_game), onNewGame) }
+                item { WatchButton(stringResource(R.string.menu_help), onHelp) }
+                item { WatchButton(stringResource(R.string.menu_resume), onDismiss) }
+            }
         }
     }
+}
+
+/**
+ * 菜单与帮助里的一行字。
+ *
+ * 宽度只给屏幕的 CONTENT_WIDTH，不铺满。审核员附的截图里帮助那几行正是因为铺满了宽度，
+ * 滚到屏幕上端时每行的头尾各被圆边切掉一个字符。收窄之后折行点提前，行首行尾都落在
+ * 圆里，字号调到最大也一样。
+ */
+@Composable
+private fun CenteredLine(text: String, color: Color, fontSize: TextUnit) {
+    Text(
+        text,
+        color = color,
+        fontSize = fontSize,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(CONTENT_WIDTH),
+    )
 }
 
 /**
@@ -762,53 +871,47 @@ private fun InGameMenu(
 private fun HelpOverlay(onDismiss: () -> Unit) {
     // 四条说明改成完整短句之后比原来长，窄的那几款表上会折行，折完就顶到圆边外头去了。
     // 所以跟对局菜单一样让它能滚，表冠也接上，手势前后一致。
-    val scrollState = rememberScrollState()
+    val listState = rememberScalingLazyListState()
     val focus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { focus.requestFocus() }
 
-    Box(
-        Modifier.fillMaxSize().background(Color(0xF7000000)).clickable { onDismiss() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-            modifier = Modifier
-                .onRotaryScrollEvent {
-                    scope.launch { scrollState.scrollBy(it.verticalScrollPixels) }
-                    true
-                }
-                .focusRequester(focus)
-                .focusable()
-                .verticalScroll(scrollState)
-                .padding(horizontal = 18.dp, vertical = 8.dp),
+    Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
+        Box(
+            Modifier.fillMaxSize().background(Color(0xF7000000)).clickable { onDismiss() },
+            contentAlignment = Alignment.Center,
         ) {
-            Text(stringResource(R.string.help_title), color = MenuHeading, fontSize = 13.sp)
-            Spacer(Modifier.height(1.dp))
-            HelpLine(stringResource(R.string.help_step1))
-            HelpLine(stringResource(R.string.help_step2))
-            HelpLine(stringResource(R.string.help_step3))
-            HelpLine(stringResource(R.string.help_step4))
-            Spacer(Modifier.height(2.dp))
-            HelpLine(stringResource(R.string.help_cancel), Color(0x99FFFFFF), 11.sp)
-            HelpLine(stringResource(R.string.help_menu), Color(0x99FFFFFF), 11.sp)
-            Spacer(Modifier.height(3.dp))
-            WatchButton(stringResource(R.string.help_got_it), onDismiss)
+            ScalingLazyColumn(
+                state = listState,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+                contentPadding = scrollPadding(),
+                scalingParams = edgeFadeParams(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onRotaryScrollEvent {
+                        scope.launch { listState.scrollBy(it.verticalScrollPixels) }
+                        true
+                    }
+                    .focusRequester(focus)
+                    .focusable(),
+            ) {
+                item { CenteredLine(stringResource(R.string.help_title), MenuHeading, 13.sp) }
+                item { HelpLine(stringResource(R.string.help_step1)) }
+                item { HelpLine(stringResource(R.string.help_step2)) }
+                item { HelpLine(stringResource(R.string.help_step3)) }
+                item { HelpLine(stringResource(R.string.help_step4)) }
+                item { HelpLine(stringResource(R.string.help_cancel), Color(0x99FFFFFF), 11.sp) }
+                item { HelpLine(stringResource(R.string.help_menu), Color(0x99FFFFFF), 11.sp) }
+                item { WatchButton(stringResource(R.string.help_got_it), onDismiss) }
+            }
         }
     }
 }
 
 @Composable
-private fun HelpLine(text: String, color: Color = Color(0xEEFFFFFF), fontSize: TextUnit = 12.sp) {
-    Text(
-        text,
-        color = color,
-        fontSize = fontSize,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth(),
-    )
-}
+private fun HelpLine(text: String, color: Color = Color(0xEEFFFFFF), fontSize: TextUnit = 12.sp) =
+    CenteredLine(text, color, fontSize)
 
 // ── Board Canvas ───────────────────────────────────────────────────────────
 
@@ -841,6 +944,12 @@ private fun BoardCanvas(
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(menuShowing) { if (!menuShowing) focusRequester.requestFocus() }
 
+    // 棋盘上的字是直接画在画布上的，不是 Compose 的 Text，所以不会自己跟随系统字号，
+    // 也不会自己换行。2026-09-22 Play 以「Wear font size」退回 vc10 指的就是这件事。
+    // 这里把系统设置里的字号倍率取出来，交给下面每一处画字的地方去乘。
+    val fontScale = LocalDensity.current.fontScale
+    val round = LocalConfiguration.current.isScreenRound
+
     // pointerInput 的手势块只在 key 变化时重建，闭包会一直抓着旧的回调不放。
     // 光标每转一下都在变，若把它当 key，手势检测器就得跟着反复重建。这里改用
     // rememberUpdatedState 让手势块始终读到最新的回调，key 保持为 Unit。
@@ -865,7 +974,7 @@ private fun BoardCanvas(
                 )
             },
     ) {
-        val cell = cellForRound(size.width, size.height)
+        val cell = cellForRound(size.width, size.height, round)
         val bw = cell * 8f; val bh = cell * 9f
         val ox = (size.width - bw) / 2f; val oy = (size.height - bh) / 2f
 
@@ -884,9 +993,9 @@ private fun BoardCanvas(
         if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
             drawCheckGlow(ox, oy, cell, board, flipped)
 
-        drawStatusLines(cell, diffName, thinkingLabel, elapsedSec, aiThinking)
+        drawStatusLines(cell, oy, bh, diffName, thinkingLabel, elapsedSec, aiThinking, fontScale, round)
 
-        if (gameOverMsg != null) drawGameOver(gameOverMsg, tapToReturn, cell)
+        if (gameOverMsg != null) drawGameOver(gameOverMsg, tapToReturn, cell, fontScale, round)
     }
 }
 
@@ -1021,27 +1130,87 @@ private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>) {
  * 圆屏上下各只剩四十来像素，而且越往两边越窄，所以只写一行、居中、字压得小。
  * 引擎思考时顺手把状态并进档位那一行，原先那个右上角的小黄点就不必了。
  */
+/**
+ * 把一行字画进圆屏里，保证不被边缘切掉。
+ *
+ * 画布上的字跟 Compose 的 Text 不一样，它既不会换行也不会省略，超出去的部分直接被屏幕
+ * 切掉。而圆屏越靠近上下两端可用的宽度越窄：一行字画在离中心 dy 远的地方，能用的宽度
+ * 是那个高度上的弦长，不是整个屏宽。所以这里先算出这一行实际能占多宽，再按需要把字号
+ * 收下来。收到 minScale 仍放不下的才截断，那种情形只会出现在极窄的表加极大的字号上。
+ *
+ * band 给的是这一行可以落在的上下范围（棋盘之外那一条），字先在里头居中，字号大到
+ * 塞不下时连带着一起缩，这样它永远不会压到棋盘上去。
+ */
+private fun DrawScope.drawTextFitted(
+    text: String,
+    bandTop: Float,
+    bandBottom: Float,
+    paint: android.graphics.Paint,
+    round: Boolean,
+    minScale: Float = 0.6f,
+) {
+    if (text.isEmpty()) return
+    val bandH = bandBottom - bandTop
+    if (bandH <= 0f) return
+
+    // 竖向：字高不能超过这条带子
+    val maxByBand = bandH * 0.78f
+    if (paint.textSize > maxByBand) paint.textSize = maxByBand
+
+    val baseline = (bandTop + bandBottom) / 2f + paint.textSize * 0.36f
+
+    // 横向：取这一行上下两缘里更靠近屏幕端点的那一条来算弦长，才不会有半个字探出去
+    val cy = size.height / 2f
+    val glyphTop = baseline - paint.textSize * 0.82f
+    val glyphBottom = baseline + paint.textSize * 0.22f
+    val dy = maxOf(abs(glyphTop - cy), abs(glyphBottom - cy))
+    val ry = size.height / 2f
+    val avail = if (!round) size.width * 0.92f
+        else if (dy >= ry) 0f
+        else size.width * sqrt((1f - (dy / ry) * (dy / ry)).coerceAtLeast(0f)) - size.width * 0.05f
+    if (avail <= 0f) return
+
+    val want = paint.measureText(text)
+    if (want > avail) paint.textSize = paint.textSize * (avail / want).coerceAtLeast(minScale)
+
+    drawContext.canvas.nativeCanvas.drawText(text, size.width / 2f, baseline, paint)
+}
+
+/**
+ * 棋盘上下两行字：上面是难度或者「思考中」，下面是用时。
+ *
+ * 字号乘上系统设置里的倍率，再交给 drawTextFitted 按所在高度的弦长收一收。两件事缺一
+ * 不可：只跟随字号不收，调大之后英文那句「Beginner · thinking」会从圆边两侧探出去；
+ * 只收不跟随，等于没听系统设置。棋盘本身的位置不动，这两行各自落在棋盘之外的空当里。
+ */
 private fun DrawScope.drawStatusLines(
     c: Float,
+    boardTop: Float,
+    boardHeight: Float,
     diffName: String,
     thinkingLabel: String,
     elapsedSec: Int,
     thinking: Boolean,
+    fontScale: Float,
+    round: Boolean,
 ) {
-    val paint = android.graphics.Paint().apply {
-        textSize = c * 0.46f
+    fun paint(color: Int) = android.graphics.Paint().apply {
+        textSize = c * 0.46f * fontScale
         textAlign = android.graphics.Paint.Align.CENTER
         typeface = Typeface.SANS_SERIF
         isAntiAlias = true
+        this.color = color
     }
-    val top = if (thinking) thinkingLabel else diffName
-    paint.color = if (thinking) 0xFFFFCC00.toInt() else 0xFF9A8A66.toInt()
-    drawContext.canvas.nativeCanvas.drawText(top, size.width / 2f, c * 0.92f, paint)
 
-    paint.color = 0xFF9A8A66.toInt()
-    drawContext.canvas.nativeCanvas.drawText(
+    // 棋盘的木底比格线本身还各外扩半格，所以这里以它的外缘为界
+    val boardPad = c * 0.48f
+    val top = if (thinking) thinkingLabel else diffName
+    drawTextFitted(top, 0f, boardTop - boardPad, paint(if (thinking) 0xFFFFCC00.toInt() else 0xFF9A8A66.toInt()), round)
+
+    drawTextFitted(
         "%d:%02d".format(elapsedSec / 60, elapsedSec % 60),
-        size.width / 2f, size.height - c * 0.44f, paint,
+        boardTop + boardHeight + boardPad, size.height,
+        paint(0xFF9A8A66.toInt()), round,
     )
 }
 
@@ -1073,10 +1242,26 @@ private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board
     drawCircle(Color(0x55FF0000), c * 0.52f, Offset(ox + flipCol(g.position.col, flipped) * c, oy + flipRow(g.position.row, flipped) * c))
 }
 
-private fun DrawScope.drawGameOver(msg: String, tapToReturn: String, c: Float) {
+/**
+ * 终局盖在棋盘上的那两行。
+ *
+ * 结果那句多数时候很短（红胜、和棋），可「裁决失败，请重开」的英文是三十三个字符，
+ * 按原先的字号画出去有屏宽的一倍半，两头全被切掉。现在同样先跟随系统字号，再按弦长收。
+ */
+private fun DrawScope.drawGameOver(msg: String, tapToReturn: String, c: Float, fontScale: Float, round: Boolean) {
     drawRect(Color(0x99000000))
-    val p = android.graphics.Paint().apply { color = 0xFFFFFFFF.toInt(); textSize = c * 0.9f; textAlign = android.graphics.Paint.Align.CENTER; typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD); isAntiAlias = true }
-    drawContext.canvas.nativeCanvas.drawText(msg, size.width / 2, size.height / 2 - c * 0.1f, p)
-    val s = android.graphics.Paint().apply { color = 0xAAFFFFFF.toInt(); textSize = c * 0.38f; textAlign = android.graphics.Paint.Align.CENTER; typeface = Typeface.SANS_SERIF; isAntiAlias = true }
-    drawContext.canvas.nativeCanvas.drawText(tapToReturn, size.width / 2, size.height / 2 + c * 0.7f, s)
+    val cy = size.height / 2f
+    val p = android.graphics.Paint().apply {
+        color = 0xFFFFFFFF.toInt(); textSize = c * 0.9f * fontScale
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD); isAntiAlias = true
+    }
+    drawTextFitted(msg, cy - c * 1.3f, cy + c * 0.2f, p, round)
+
+    val s = android.graphics.Paint().apply {
+        color = 0xAAFFFFFF.toInt(); textSize = c * 0.38f * fontScale
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = Typeface.SANS_SERIF; isAntiAlias = true
+    }
+    drawTextFitted(tapToReturn, cy + c * 0.35f, cy + c * 1.05f, s, round)
 }

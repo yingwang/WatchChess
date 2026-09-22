@@ -19,3 +19,6 @@ competitive/
 
 # 图标生成脚本的中间产物。成品已经落到 res/ 和 store-assets/ 里了。
 icon-work/
+
+# 审核复查时在表上抓的截图与量化脚本，属于验证过程不进版本库
+qa-shots/
