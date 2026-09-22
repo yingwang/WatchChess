@@ -158,7 +158,10 @@ private fun scrollPadding(): PaddingValues {
 }
 
 // 上手提示只在装上之后的第一局出现一次，看过就记下来，之后不再打扰。
+private const val PREFS_NAME = "watchchess"
 private const val PREF_HELP_SEEN = "help_seen"
+private const val PREF_BGM_ON = "bgm_on"
+private const val PREF_SFX_ON = "sfx_on"
 
 // ── Difficulty ─────────────────────────────────────────────────────────────
 
@@ -272,16 +275,30 @@ private class GameSounds(context: Context) {
         isLooping = true; setVolume(0.15f, 0.15f)
     }
 
-    var sfxOn = true
+    // 这两个开关要记住。2026-09-22 殿下说调试的时候把音乐音效关了，翻出来才发现关了
+    // 也白关：它们只存在内存里，应用一重启就又回到开着。菜单里明明有这个开关，关掉之后
+    // 下次打开还响，那这个开关等于没有。存进跟存档、帮助提示同一个 SharedPreferences。
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    var sfxOn = prefs.getBoolean(PREF_SFX_ON, true)
 
     // 背景音乐默认开着。2026-09-20 先按殿下的话关成默认不开，当天她改了主意说还是
     // 默认开，所以改回来。菜单里开关仍在，随时可关。
-    var bgmOn = true
+    var bgmOn = prefs.getBoolean(PREF_BGM_ON, true)
 
     fun startBgm() { if (bgmOn) bgm?.start() }
     fun stopBgm() { bgm?.pause() }
-    fun toggleBgm(): Boolean { bgmOn = !bgmOn; if (bgmOn) bgm?.start() else bgm?.pause(); return bgmOn }
-    fun toggleSfx(): Boolean { sfxOn = !sfxOn; return sfxOn }
+    fun toggleBgm(): Boolean {
+        bgmOn = !bgmOn
+        if (bgmOn) bgm?.start() else bgm?.pause()
+        prefs.edit().putBoolean(PREF_BGM_ON, bgmOn).apply()
+        return bgmOn
+    }
+    fun toggleSfx(): Boolean {
+        sfxOn = !sfxOn
+        prefs.edit().putBoolean(PREF_SFX_ON, sfxOn).apply()
+        return sfxOn
+    }
     fun playMove() { if (sfxOn) pool.play(moveId, 0.6f, 0.6f, 1, 0, 1f) }
     fun playCapture() { if (sfxOn) pool.play(captureId, 0.8f, 0.8f, 1, 0, 1f) }
     fun sayCapture() { if (sfxOn) pool.play(sayCaptureId, 1f, 1f, 2, 0, 1f) }
@@ -315,8 +332,6 @@ fun GameScreen() {
     var showMenu by remember { mutableStateOf(false) }
     // 上手提示。第一次开局时自动压在棋盘上，点掉之后再也不自己出现，想回看走长按菜单。
     var showHelp by remember { mutableStateOf(false) }
-    var bgmOn by remember { mutableStateOf(true) }
-    var sfxOn by remember { mutableStateOf(true) }
     var cursorIdx by remember { mutableIntStateOf(0) }
     // 这一局里每个局面走过哪些着法。键是局面本身，值是从这个局面走出去过的着法。
     // 引擎是死的，同一个局面会照原样再走一遍，两边来回推就卡住了，所以记下来让它换一着。
@@ -331,7 +346,11 @@ fun GameScreen() {
     val scope = rememberCoroutineScope()
     val searches = remember { GameSearchSession() }
     val sounds = remember { GameSounds(context) }
-    val prefs = remember { context.getSharedPreferences("watchchess", Context.MODE_PRIVATE) }
+    // 初值取自 GameSounds，它已经从 SharedPreferences 读过了；这里再写死 true 的话，
+    // 菜单上显示的开关状态会跟实际响不响对不上。声明要排在 sounds 之后才读得到。
+    var bgmOn by remember { mutableStateOf(sounds.bgmOn) }
+    var sfxOn by remember { mutableStateOf(sounds.sfxOn) }
+    val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
     var saveReady by remember { mutableStateOf(false) }
     var lastSaved by remember { mutableStateOf(prefs.getString("saved_game_v1", null)) }
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }

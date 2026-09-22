@@ -1,4 +1,5 @@
 Three fixes for Wear OS quality requirements:
 scrollable screens now show the position indicator;
 on-board text follows the system font size setting;
-text and buttons are no longer cut off by the round screen edge.
+text, buttons and the board are no longer cut off by the round screen edge.
+The music and sound switches are now remembered between sessions.
