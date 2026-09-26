@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 表的系统语言是中文时用这一份，不需要应用内切换。 -->
 <resources>
+    <string name="restoring_game">正在恢复棋局…</string>
+    <string name="engine_retry">引擎暂不可用，棋局已保留</string>
+    <string name="tap_to_retry">轻点重试</string>
     <string name="app_name">象棋</string>
 
     <string name="level_beginner">入门</string>

@@ -6,7 +6,6 @@ import com.yingwang.watchchess.model.Board
 import com.yingwang.watchchess.model.Move
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
-import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
@@ -44,15 +43,15 @@ class FairyEngine(private val context: Context) {
     // ── 启停 ────────────────────────────────────────────────────────────────
 
     /** 启动并初始化引擎。失败时返回 false 并把原因记在 lastError 里，调用方应回落到内置引擎。 */
-    suspend fun start(): Boolean = withContext(Dispatchers.IO) {
-        if (isRunning) return@withContext true
+    suspend fun start(): Boolean = runInterruptible(Dispatchers.IO) {
+        if (isRunning) return@runInterruptible true
         try {
             stop()
 
             val bin = File(context.applicationInfo.nativeLibraryDir, BIN_NAME)
             if (!bin.exists()) {
                 lastError = "engine binary not found at ${bin.absolutePath}"
-                return@withContext false
+                return@runInterruptible false
             }
             val pb = ProcessBuilder(bin.absolutePath)
                 .directory(context.filesDir)
@@ -77,7 +76,7 @@ class FairyEngine(private val context: Context) {
                 }) {
                 lastError = "no uciok from engine"
                 stop()
-                return@withContext false
+                return@runInterruptible false
             }
 
             check("UCI_Variant" in options && "Use NNUE" in options) {
@@ -87,10 +86,13 @@ class FairyEngine(private val context: Context) {
             if (!awaitToken("readyok", HANDSHAKE_TIMEOUT_MS)) {
                 lastError = "no readyok from engine"
                 stop()
-                return@withContext false
+                return@runInterruptible false
             }
             lastError = null
             true
+        } catch (e: InterruptedException) {
+            stop()
+            throw e
         } catch (e: Exception) {
             lastError = "${e.javaClass.simpleName}: ${e.message}"
             Log.w(TAG, "start failed", e)

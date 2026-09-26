@@ -9,6 +9,9 @@
   全世界下象棋的人认的也是这几个字，翻译过去反而没人看得懂。
 -->
 <resources>
+    <string name="restoring_game">Restoring game…</string>
+    <string name="engine_retry">Engine paused. Your game is safe.</string>
+    <string name="tap_to_retry">Tap to retry</string>
     <string name="app_name">WatchChess</string>
 
     <string name="level_beginner">Beginner</string>

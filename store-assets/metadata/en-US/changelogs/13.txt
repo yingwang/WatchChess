@@ -1,0 +1,1 @@
+Refined ivory and celadon board with distinct light and dark pieces. Cancelling a selection keeps the cursor on that piece. Smoother menu rotary handling and fewer repeated drawing calculations, with the same two-step controls and selection speed.

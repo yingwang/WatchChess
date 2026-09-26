@@ -11,6 +11,10 @@ internal data class SavedGame(
     val resultName: String,
     val moves: List<String>,
 ) {
+    /** Legacy saves could incorrectly persist a temporary engine failure as a final result. */
+    fun terminalResultName(): String? = resultName.takeIf {
+        it in setOf("result_red_wins", "result_black_wins", "result_draw")
+    }
     fun encode(): String = listOf("1", difficulty.toString(), side.name,
         startedAt.toString(), resultName, moves.joinToString(" ")).joinToString("\n")
 

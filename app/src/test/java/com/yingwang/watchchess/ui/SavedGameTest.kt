@@ -6,6 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SavedGameTest {
+    @Test fun temporaryEngineErrorsAreNotRestoredAsTerminalResults() {
+        listOf("result_unavailable", "engine_no_move", "", "unknown").forEach {
+            assertNull(SavedGame(1, PieceColor.RED, 1, it, emptyList()).terminalResultName())
+        }
+        listOf("result_red_wins", "result_black_wins", "result_draw").forEach {
+            assertEquals(it, SavedGame(1, PieceColor.RED, 1, it, emptyList()).terminalResultName())
+        }
+    }
     private val moves = listOf("b0c2", "b9c7", "c2b0", "c7b9")
 
     @Test fun roundTripPreservesSideDifficultyHistoryAndResult() {

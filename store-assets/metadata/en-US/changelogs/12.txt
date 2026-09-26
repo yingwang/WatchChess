@@ -1,0 +1,1 @@
+Retry temporary engine failures without losing your game. Music and engine calculations pause when you leave the app. Improved game restoration and saving.

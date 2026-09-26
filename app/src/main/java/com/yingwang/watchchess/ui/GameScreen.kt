@@ -56,6 +56,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -79,10 +82,12 @@ import com.yingwang.watchchess.ai.GameVerdict
 import com.yingwang.watchchess.ai.toFen
 import com.yingwang.watchchess.ai.toUci
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import com.yingwang.watchchess.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import kotlin.math.atan2
 import kotlin.math.abs
 import kotlin.math.min
@@ -90,15 +95,15 @@ import kotlin.math.sqrt
 
 // ── Colors ─────────────────────────────────────────────────────────────────
 
-private val BoardBg = Color(0xFFD4A960)
-private val GridColor = Color(0xFF3D2B1F)
-private val RedPiece = Color(0xFFCC2222)
-private val BlackPiece = Color(0xFF1A1A1A)
-private val SelectedRing = Color(0xFF00CC44)
-private val LegalDot = Color(0x8800CC44)
+private val BoardBg = Color(0xFFF0EDE3)
+private val GridColor = Color(0xFF52675F)
+private val RedPiece = Color(0xFF246B5B)
+private val BlackPiece = Color(0xFF253342)
+private val SelectedRing = Color(0xFF257B65)
+private val LegalDot = Color(0xAA257B65)
 private val OpponentMoveColor = Color(0xFF1B6BFF)
-private val OwnMoveColor = Color(0xFF17A34A)
-private val CursorRing = Color(0xFF00FF66)
+private val OwnMoveColor = Color(0xFF257B65)
+private val CursorRing = Color(0xFF257B65)
 
 // 菜单一套青瓷色。殿下 2026-09-20 选的方向：底色是很深的墨青，按钮同色系里稍亮一档，
 // 描一道极细的浅线，当前选中的那一个填汝窑那种偏灰的蓝绿。
@@ -326,6 +331,7 @@ fun GameScreen() {
     var aiThinking by remember { mutableStateOf(false) }
     // 存资源 id，画的时候才解析成当前语言的字。
     var gameOverMsg by remember { mutableStateOf<Int?>(null) }
+    var retryNeeded by remember { mutableStateOf(false) }
     var gameStartTime by remember { mutableLongStateOf(0L) }
     var elapsedSec by remember { mutableIntStateOf(0) }
     var moveCount by remember { mutableIntStateOf(0) }
@@ -333,6 +339,7 @@ fun GameScreen() {
     // 上手提示。第一次开局时自动压在棋盘上，点掉之后再也不自己出现，想回看走长按菜单。
     var showHelp by remember { mutableStateOf(false) }
     var cursorIdx by remember { mutableIntStateOf(0) }
+    var cancelledPiece by remember { mutableStateOf<Position?>(null) }
     // 这一局里每个局面走过哪些着法。键是局面本身，值是从这个局面走出去过的着法。
     // 引擎是死的，同一个局面会照原样再走一遍，两边来回推就卡住了，所以记下来让它换一着。
     // 只在本局有效，开新局清空。
@@ -343,6 +350,8 @@ fun GameScreen() {
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
     val scope = rememberCoroutineScope()
     val searches = remember { GameSearchSession() }
     val sounds = remember { GameSounds(context) }
@@ -364,16 +373,42 @@ fun GameScreen() {
     // 应用一打开就先把引擎热起来，别等到开局才启动。它启动加握手要一秒七，摆在开局
     // 那一刻就正好压在第一步棋上，殿下 2026-09-20 说的「感觉有点偏慢」多半是这一下。
     // 挑难度那几秒足够它准备好。现在它常驻也就八十多兆，表上还有五百多兆余量，扛得住。
-    LaunchedEffect(Unit) {
+    LaunchedEffect(foreground) {
+        if (!foreground) {
+            searches.invalidate()
+            aiThinking = false
+            sounds.stopBgm()
+            withContext(NonCancellable + Dispatchers.IO) {
+                searches.withEngine { engine.stop() }
+            }
+            engineReady = false
+            return@LaunchedEffect
+        }
         searches.withEngine { engineReady = engine.start() }
+        if (screen == "game") {
+            sounds.startBgm()
+            if (gameOverMsg == null) aiMoveTrigger++
+        }
         if (!engineReady) Log.w("WatchChess", "engine unavailable: ${engine.lastError}")
     }
 
-    DisposableEffect(Unit) { onDispose { searches.invalidate(); sounds.release(); engine.stop() } }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, _ ->
+            foreground = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            if (!foreground) { searches.invalidate(); aiThinking = false; sounds.stopBgm() }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            searches.invalidate()
+            sounds.release()
+            scope.launch(NonCancellable + Dispatchers.IO) { searches.withEngine { engine.stop() } }
+        }
+    }
 
     // Timer
-    LaunchedEffect(screen, gameOverMsg) {
-        if (screen == "game" && gameOverMsg == null) {
+    LaunchedEffect(screen, gameOverMsg, foreground) {
+        if (screen == "game" && gameOverMsg == null && foreground) {
             while (true) { delay(1000); if (gameStartTime > 0) elapsedSec = ((System.currentTimeMillis() - gameStartTime) / 1000).toInt() }
         }
     }
@@ -388,7 +423,7 @@ fun GameScreen() {
         board = Board.createInitialBoard()
         selectedPos = null; legalMoves = emptyList(); lastMove = null
         moveHistory = emptyList(); undoStack = emptyList()
-        aiThinking = false; gameOverMsg = null; showMenu = false
+        aiThinking = false; gameOverMsg = null; retryNeeded = false; showMenu = false
         playedFrom.clear(); positionHistory = listOf(board.toFen())
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
         screen = "game"; sounds.startBgm()
@@ -410,7 +445,8 @@ fun GameScreen() {
     }
 
     fun aiMove() {
-        if (gameOverMsg != null || aiThinking || screen != "game") return
+        if (gameOverMsg != null || aiThinking || screen != "game" || !foreground) return
+        retryNeeded = false
         aiThinking = true
         val searchBoard = board
         val searchHistory = moveHistory.toList()
@@ -423,6 +459,8 @@ fun GameScreen() {
             if (!engine.isRunning) engineReady = engine.start()
             val before = if (engineReady) engine.adjudicate(searchHistory) else GameVerdict.UNAVAILABLE
             if (before != GameVerdict.ONGOING) return@search TurnResult(null, before.messageRes)
+            // Returning from the background may only require retrying adjudication after an AI move.
+            if (searchBoard.currentPlayer == playerColor) return@search TurnResult(null, null)
             val move = if (engineReady) {
                 engine.findBestMove(
                     searchBoard, searchHistory, d.nodes, d.timeMs,
@@ -440,7 +478,9 @@ fun GameScreen() {
             TurnResult(move, after.messageRes)
         }, applyResult = { result ->
             val move = result.move
-            if (move == null && screen == "game" && board === searchBoard) gameOverMsg = result.messageRes
+            val transientFailure = result.messageRes == R.string.result_unavailable || result.messageRes == R.string.engine_no_move
+            if (screen == "game" && board === searchBoard) retryNeeded = transientFailure
+            if (move == null && screen == "game" && board === searchBoard) gameOverMsg = result.messageRes.takeUnless { transientFailure }
             if (move != null && screen == "game" && board === searchBoard) {
                 playedFrom.getOrPut(positionKey) { mutableSetOf() }.add(move.toUci())
                 undoStack = undoStack + Snapshot(board, move)
@@ -449,7 +489,7 @@ fun GameScreen() {
                 positionHistory = positionHistory + nb.toFen()
                 if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
                 else { sounds.playMove(); vibrate(context) }
-                gameOverMsg = checkGameOver(board) ?: result.messageRes
+                gameOverMsg = checkGameOver(board) ?: result.messageRes.takeUnless { transientFailure }
                 if (gameOverMsg != null) vibrate(context, 100)
                 else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
             }
@@ -472,6 +512,7 @@ fun GameScreen() {
         undoStack = undoStack.take(keep); moveHistory = moveHistory.take(keep)
         positionHistory = positionHistory.take(keep + 1)
         gameOverMsg = null
+        retryNeeded = false
         playedFrom.clear()
         undoStack.filter { it.move.piece.color != playerColor }.forEach {
             playedFrom.getOrPut(it.board.toFen()) { mutableSetOf() }.add(it.move.toUci())
@@ -482,7 +523,7 @@ fun GameScreen() {
     }
 
     fun onTap(pos: Position) {
-        if (aiThinking || gameOverMsg != null) return
+        if (aiThinking || gameOverMsg != null || retryNeeded || !foreground) return
         val moveToMake = legalMoves.find { it.to == pos }
         if (moveToMake != null) {
             undoStack = undoStack + Snapshot(board, moveToMake)
@@ -508,13 +549,13 @@ fun GameScreen() {
     // 执黑开局时让引擎先走一步。startGame 里叫不到 aiMove（它定义在后面），
     // 所以那边只把计数加一，由这个效应接住。
     LaunchedEffect(aiMoveTrigger) {
-        if (aiMoveTrigger > 0 && screen == "game" && board.currentPlayer != playerColor) aiMove()
+        if (aiMoveTrigger > 0 && screen == "game") aiMove()
     }
 
     LaunchedEffect(Unit) {
         val saved = prefs.getString("saved_game_v1", null)?.let(SavedGame::decode)
         if (saved != null) runCatching {
-            val replay = saved.replay()
+            val replay = withContext(Dispatchers.Default) { saved.replay() }
             diffIdx = saved.difficulty; playerColor = saved.side
             val d = DIFFICULTIES[diffIdx]
             ai = ChessAI(maxDepth = d.depth, timeLimit = d.timeMs, quiescenceDepth = if (d.depth >= 6) 3 else 2)
@@ -527,14 +568,15 @@ fun GameScreen() {
             lastMove = moveHistory.lastOrNull()
             moveCount = moveHistory.count { it.piece.color == playerColor }
             gameStartTime = saved.startedAt
-            gameOverMsg = saved.resultName.takeIf { it.isNotEmpty() }?.let {
+            gameOverMsg = saved.terminalResultName()?.let {
                 context.resources.getIdentifier(it, "string", context.packageName).takeIf { id -> id != 0 }
             }
             replay.filter { it.second.piece.color != playerColor }.forEach { (before, move) ->
                 playedFrom.getOrPut(before.toFen()) { mutableSetOf() }.add(move.toUci())
             }
-            screen = "game"; sounds.startBgm()
-            if (gameOverMsg == null && board.currentPlayer != playerColor) aiMoveTrigger++
+            screen = "game"
+            if (foreground) sounds.startBgm()
+            if (gameOverMsg == null) aiMoveTrigger++
         }.onFailure { Log.w("WatchChess", "Saved game could not be restored", it) }
         saveReady = true
     }
@@ -545,8 +587,9 @@ fun GameScreen() {
                 gameOverMsg?.let { context.resources.getResourceEntryName(it) }.orEmpty(),
                 moveHistory.map { it.toUci() }).encode() else null
             if (encoded != lastSaved) {
-                // 棋谱很小，只在落子、悔棋或退回菜单时写入，返回前确保磁盘已收到。
-                if (prefs.edit().putString("saved_game_v1", encoded).commit()) lastSaved = encoded
+                // apply immediately updates memory and queues ordered disk writes off the UI thread.
+                prefs.edit().putString("saved_game_v1", encoded).apply()
+                lastSaved = encoded
             }
         }
     }
@@ -582,8 +625,12 @@ fun GameScreen() {
     val candidates = if (selectedPos == null) movablePieces else destinations
     val cursorPos = candidates.getOrNull(cursorIdx.coerceIn(0, maxOf(0, candidates.size - 1)))
 
-    // 换了一段（选中、取消、落子、悔棋）就把光标拨回头一个
-    LaunchedEffect(selectedPos, board) { cursorIdx = 0; rotaryAcc = 0f }
+    // 取消选子时回到刚才那颗子；落子、悔棋和新选子仍从新列表起点开始。
+    LaunchedEffect(selectedPos, board) {
+        cursorIdx = if (selectedPos == null) restoredCursorIndex(movablePieces, cancelledPiece) else 0
+        cancelledPiece = null
+        rotaryAcc = 0f
+    }
 
     fun onRotary(px: Float): Boolean {
         if (aiThinking || gameOverMsg != null || showMenu || showHelp) return false
@@ -600,6 +647,7 @@ fun GameScreen() {
     // 点屏幕任意一处等于确认当前亮着的那个。两段共用这一条规矩，不必记两套。
     fun onConfirm() {
         if (aiThinking || gameOverMsg != null || showHelp) return
+        if (retryNeeded) { aiMove(); return }
         onTap(cursorPos ?: return)
     }
 
@@ -607,10 +655,19 @@ fun GameScreen() {
     BackHandler(enabled = screen == "game" && (showHelp || showMenu || selectedPos != null)) {
         if (showHelp) showHelp = false
         else if (showMenu) showMenu = false
-        else { selectedPos = null; legalMoves = emptyList(); cursorIdx = 0; vibrate(context, 15) }
+        else {
+            cancelledPiece = selectedPos
+            cursorIdx = restoredCursorIndex(movablePieces, selectedPos)
+            selectedPos = null; legalMoves = emptyList(); rotaryAcc = 0f
+            vibrate(context, 15)
+        }
     }
 
-    if (screen == "menu") {
+    if (!saveReady) {
+        Box(Modifier.fillMaxSize().background(MenuBg), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.restoring_game), color = BtnText)
+        }
+    } else if (screen == "menu") {
         MainMenu(onPick = { idx -> diffIdx = idx; screen = "side" }, selectedIdx = diffIdx)
     } else if (screen == "side") {
         SideMenu(
@@ -623,7 +680,7 @@ fun GameScreen() {
             BoardCanvas(
                 board = board, selectedPos = selectedPos, legalMoves = legalMoves,
                 lastMove = lastMove, aiThinking = aiThinking,
-                gameOverMsg = gameOverMsg?.let { stringResource(it) },
+                gameOverMsg = gameOverMsg?.let { stringResource(it) } ?: if (retryNeeded) stringResource(R.string.engine_retry) else null,
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
                 menuShowing = showMenu,
                 captured = capturedPieces,
@@ -631,12 +688,12 @@ fun GameScreen() {
                 playerColor = playerColor,
                 diffName = stringResource(DIFFICULTIES[diffIdx].nameRes),
                 thinkingLabel = stringResource(R.string.thinking, stringResource(DIFFICULTIES[diffIdx].nameRes)),
-                tapToReturn = stringResource(R.string.tap_to_return),
+                tapToReturn = stringResource(if (retryNeeded) R.string.tap_to_retry else R.string.tap_to_return),
                 elapsedSec = elapsedSec,
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
-                onGameOverTap = { returnToMenu() },
+                onGameOverTap = { if (retryNeeded) aiMove() else returnToMenu() },
             )
             // Menu overlay
             if (showMenu) {
@@ -719,7 +776,15 @@ private fun SideMenu(onPick: (PieceColor) -> Unit, onBack: () -> Unit) {
 private fun MenuScaffold(content: ScalingLazyListScope.() -> Unit) {
     val listState = rememberScalingLazyListState()
     val focus = remember { FocusRequester() }
-    val scope = rememberCoroutineScope()
+    val rotaryEvents = remember { Channel<Float>(Channel.UNLIMITED) }
+    LaunchedEffect(listState) {
+        for (delta in rotaryEvents) {
+            var total = delta
+            while (true) total += rotaryEvents.tryReceive().getOrNull() ?: break
+            listState.scrollBy(total)
+        }
+    }
+    DisposableEffect(rotaryEvents) { onDispose { rotaryEvents.close() } }
     LaunchedEffect(Unit) { focus.requestFocus() }
 
     Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
@@ -733,7 +798,7 @@ private fun MenuScaffold(content: ScalingLazyListScope.() -> Unit) {
                 .fillMaxSize()
                 .background(MenuBg)
                 .onRotaryScrollEvent {
-                    scope.launch { listState.scrollBy(it.verticalScrollPixels) }
+                    rotaryEvents.trySend(it.verticalScrollPixels)
                     true
                 }
                 .focusRequester(focus)
@@ -968,6 +1033,9 @@ private fun BoardCanvas(
     // 这里把系统设置里的字号倍率取出来，交给下面每一处画字的地方去乘。
     val fontScale = LocalDensity.current.fontScale
     val round = LocalConfiguration.current.isScreenRound
+    val paints = remember { BoardPaints() }
+    val pieces = remember(board) { board.getAllPieces() }
+    val inCheck = remember(board) { board.isInCheck(board.currentPlayer) }
 
     // pointerInput 的手势块只在 key 变化时重建，闭包会一直抓着旧的回调不放。
     // 光标每转一下都在变，若把它当 key，手势检测器就得跟着反复重建。这里改用
@@ -980,7 +1048,7 @@ private fun BoardCanvas(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF2B1B0E))
+            .background(MenuBg)
             .onRotaryScrollEvent { onRotary(it.verticalScrollPixels) }
             .focusRequester(focusRequester)
             .focusable()
@@ -997,11 +1065,11 @@ private fun BoardCanvas(
         val bw = cell * 8f; val bh = cell * 9f
         val ox = (size.width - bw) / 2f; val oy = (size.height - bh) / 2f
 
-        drawBoard(ox, oy, cell)
+        drawBoard(ox, oy, cell, paints.board)
         drawSelection(ox, oy, cell, selectedPos, flipped)
         drawLegalMoves(ox, oy, cell, legalMoves, flipped)
-        drawPieces(ox, oy, cell, board, flipped)
-        drawCaptured(ox, cell, captured)
+        drawPieces(ox, oy, cell, pieces, flipped, paints.piece)
+        drawCaptured(ox, cell, captured, paints.captured)
         // 标出刚走的那一步，画在棋子上面才看得见。对方是蓝的，自己是绿的。
         lastMove?.let {
             drawMoveMarker(ox, oy, cell, it,
@@ -1009,18 +1077,31 @@ private fun BoardCanvas(
         }
         drawCursor(ox, oy, cell, cursorPos, pickingDestination, flipped)
 
-        if (board.isInCheck(board.currentPlayer) && gameOverMsg == null)
+        if (inCheck && gameOverMsg == null)
             drawCheckGlow(ox, oy, cell, board, flipped)
 
-        drawStatusLines(cell, oy, bh, diffName, thinkingLabel, elapsedSec, aiThinking, fontScale, round)
+        drawStatusLines(cell, oy, bh, diffName, thinkingLabel, elapsedSec, aiThinking, fontScale, round, paints.status)
 
-        if (gameOverMsg != null) drawGameOver(gameOverMsg, tapToReturn, cell, fontScale, round)
+        if (gameOverMsg != null) drawGameOver(gameOverMsg, tapToReturn, cell, fontScale, round, paints.result, paints.hint)
     }
 }
 
 // ── Drawing helpers ────────────────────────────────────────────────────────
 
-private fun DrawScope.drawBoard(ox: Float, oy: Float, c: Float) {
+private class BoardPaints {
+    private fun paint(bold: Boolean = false) = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = if (bold) Typeface.create(Typeface.SERIF, Typeface.BOLD) else Typeface.SANS_SERIF
+    }
+    val board = paint()
+    val piece = paint(true)
+    val captured = paint(true)
+    val status = paint()
+    val result = paint(true)
+    val hint = paint()
+}
+
+private fun DrawScope.drawBoard(ox: Float, oy: Float, c: Float, p: android.graphics.Paint) {
     drawRect(BoardBg, Offset(ox - c * 0.48f, oy - c * 0.48f), Size(c * 8 + c * 0.96f, c * 9 + c * 0.96f))
     for (r in 0..9) drawLine(GridColor, Offset(ox, oy + r * c), Offset(ox + 8 * c, oy + r * c), 1.2f)
     for (col in 0..8) {
@@ -1032,7 +1113,7 @@ private fun DrawScope.drawBoard(ox: Float, oy: Float, c: Float) {
     drawLine(GridColor, Offset(ox + 5 * c, oy), Offset(ox + 3 * c, oy + 2 * c), 1f)
     drawLine(GridColor, Offset(ox + 3 * c, oy + 7 * c), Offset(ox + 5 * c, oy + 9 * c), 1f)
     drawLine(GridColor, Offset(ox + 5 * c, oy + 7 * c), Offset(ox + 3 * c, oy + 9 * c), 1f)
-    val p = android.graphics.Paint().apply { color = 0xFF3D2B1F.toInt(); textSize = c * 0.34f; textAlign = android.graphics.Paint.Align.CENTER; typeface = Typeface.SERIF; isAntiAlias = true }
+    p.color = 0xFF52675F.toInt(); p.textSize = c * 0.34f
     val ry = oy + 4.5f * c + c * 0.12f
     drawContext.canvas.nativeCanvas.drawText("楚河", ox + 2 * c, ry, p)
     drawContext.canvas.nativeCanvas.drawText("漢界", ox + 6 * c, ry, p)
@@ -1045,17 +1126,17 @@ private fun DrawScope.drawBoard(ox: Float, oy: Float, c: Float) {
 private fun flipRow(row: Int, flipped: Boolean) = if (flipped) 9 - row else row
 private fun flipCol(col: Int, flipped: Boolean) = if (flipped) 8 - col else col
 
-private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, board: Board, flipped: Boolean) {
+private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, pieces: List<Piece>, flipped: Boolean, tp: android.graphics.Paint) {
     val r = c * 0.43f
-    val tp = android.graphics.Paint().apply { textSize = c * 0.50f; textAlign = android.graphics.Paint.Align.CENTER; typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD); isAntiAlias = true }
-    for (piece in board.getAllPieces()) {
+    tp.textSize = c * 0.50f
+    for (piece in pieces) {
         val cx = ox + flipCol(piece.position.col, flipped) * c
         val cy = oy + flipRow(piece.position.row, flipped) * c
         val ctr = Offset(cx, cy); val red = piece.color == PieceColor.RED
-        drawCircle(Color(0xFFF5E6C8), r, ctr)
+        drawCircle(if (red) Color(0xFFFFFDF5) else BlackPiece, r, ctr)
         drawCircle(if (red) RedPiece else BlackPiece, r, ctr, style = Stroke(1.8f))
         drawCircle(if (red) RedPiece else BlackPiece, r * 0.80f, ctr, style = Stroke(0.8f))
-        tp.color = if (red) 0xFFCC2222.toInt() else 0xFF1A1A1A.toInt()
+        tp.color = if (red) 0xFF246B5B.toInt() else 0xFFFFFDF5.toInt()
         val fm = tp.fontMetrics
         drawContext.canvas.nativeCanvas.drawText(piece.type.getDisplayName(piece.color), cx, cy - (fm.ascent + fm.descent) / 2, tp)
     }
@@ -1100,7 +1181,7 @@ private fun DrawScope.drawCursor(ox: Float, oy: Float, c: Float, pos: Position?,
  * 列心那个横坐标上，圆屏只在中间那一段有高度，所以这一列从屏幕竖直中点往两头长，
  * 长到装不下就不再画，宁可少画几个也不要把子甩到圆外面去。
  */
-private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>) {
+private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>, tp: android.graphics.Paint) {
     if (captured.isEmpty()) return
     val cx = size.width / 2f
     val cy = size.height / 2f
@@ -1120,17 +1201,16 @@ private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>) {
         val shown = list.takeLast(fits)     // 装不下就留最近被吃的那些
         val top = cy - (shown.size - 1) * step / 2f
 
-        val tp = android.graphics.Paint().apply {
+        tp.apply {
             textSize = r * 1.15f
             textAlign = android.graphics.Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
             isAntiAlias = true
-            color = if (side == PieceColor.RED) 0xFFCC2222.toInt() else 0xFF1A1A1A.toInt()
+            color = if (side == PieceColor.RED) 0xFF246B5B.toInt() else 0xFFFFFDF5.toInt()
         }
         val fm = tp.fontMetrics
         for ((i, piece) in shown.withIndex()) {
             val y = top + i * step
-            drawCircle(Color(0xFFF5E6C8), r, Offset(x, y))
+            drawCircle(if (side == PieceColor.RED) Color(0xFFFFFDF5) else BlackPiece, r, Offset(x, y))
             drawCircle(colour, r, Offset(x, y), style = Stroke(1.2f))
             drawContext.canvas.nativeCanvas.drawText(
                 piece.type.getDisplayName(piece.color), x, y - (fm.ascent + fm.descent) / 2, tp,
@@ -1212,8 +1292,9 @@ private fun DrawScope.drawStatusLines(
     thinking: Boolean,
     fontScale: Float,
     round: Boolean,
+    statusPaint: android.graphics.Paint,
 ) {
-    fun paint(color: Int) = android.graphics.Paint().apply {
+    fun paint(color: Int) = statusPaint.apply {
         textSize = c * 0.46f * fontScale
         textAlign = android.graphics.Paint.Align.CENTER
         typeface = Typeface.SANS_SERIF
@@ -1224,12 +1305,12 @@ private fun DrawScope.drawStatusLines(
     // 棋盘的木底比格线本身还各外扩半格，所以这里以它的外缘为界
     val boardPad = c * 0.48f
     val top = if (thinking) thinkingLabel else diffName
-    drawTextFitted(top, 0f, boardTop - boardPad, paint(if (thinking) 0xFFFFCC00.toInt() else 0xFF9A8A66.toInt()), round)
+    drawTextFitted(top, 0f, boardTop - boardPad, paint(if (thinking) 0xFFE5D3A0.toInt() else 0xFFB5CCC4.toInt()), round)
 
     drawTextFitted(
         "%d:%02d".format(elapsedSec / 60, elapsedSec % 60),
         boardTop + boardHeight + boardPad, size.height,
-        paint(0xFF9A8A66.toInt()), round,
+        paint(0xFFB5CCC4.toInt()), round,
     )
 }
 
@@ -1258,7 +1339,7 @@ private fun DrawScope.drawMoveMarker(ox: Float, oy: Float, c: Float, move: Move?
 
 private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board, flipped: Boolean) {
     val g = board.getAllPieces().find { it.type == PieceType.GENERAL && it.color == board.currentPlayer } ?: return
-    drawCircle(Color(0x55FF0000), c * 0.52f, Offset(ox + flipCol(g.position.col, flipped) * c, oy + flipRow(g.position.row, flipped) * c))
+    drawCircle(Color(0x99C18B35), c * 0.52f, Offset(ox + flipCol(g.position.col, flipped) * c, oy + flipRow(g.position.row, flipped) * c), style = Stroke(3f))
 }
 
 /**
@@ -1267,17 +1348,17 @@ private fun DrawScope.drawCheckGlow(ox: Float, oy: Float, c: Float, board: Board
  * 结果那句多数时候很短（红胜、和棋），可「裁决失败，请重开」的英文是三十三个字符，
  * 按原先的字号画出去有屏宽的一倍半，两头全被切掉。现在同样先跟随系统字号，再按弦长收。
  */
-private fun DrawScope.drawGameOver(msg: String, tapToReturn: String, c: Float, fontScale: Float, round: Boolean) {
+private fun DrawScope.drawGameOver(msg: String, tapToReturn: String, c: Float, fontScale: Float, round: Boolean, p: android.graphics.Paint, s: android.graphics.Paint) {
     drawRect(Color(0x99000000))
     val cy = size.height / 2f
-    val p = android.graphics.Paint().apply {
+    p.apply {
         color = 0xFFFFFFFF.toInt(); textSize = c * 0.9f * fontScale
         textAlign = android.graphics.Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD); isAntiAlias = true
+        isAntiAlias = true
     }
     drawTextFitted(msg, cy - c * 1.3f, cy + c * 0.2f, p, round)
 
-    val s = android.graphics.Paint().apply {
+    s.apply {
         color = 0xAAFFFFFF.toInt(); textSize = c * 0.38f * fontScale
         textAlign = android.graphics.Paint.Align.CENTER
         typeface = Typeface.SANS_SERIF; isAntiAlias = true

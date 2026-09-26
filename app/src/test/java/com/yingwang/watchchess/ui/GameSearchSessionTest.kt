@@ -5,6 +5,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GameSearchSessionTest {
+    @Test fun backgroundCancellationAllowsFreshSearchOnResume() = runBlocking {
+        withTimeout(5000) {
+            val session = GameSearchSession()
+            val started = CompletableDeferred<Unit>()
+            val resumed = CompletableDeferred<Unit>()
+            session.search(this, compute = {
+                started.complete(Unit)
+                awaitCancellation()
+            }, applyResult = { fail("Background search must not apply") }, finished = {})
+            started.await()
+            session.invalidate()
+            session.withEngine { /* background engine cleanup holds the same lock */ }
+            session.search(this, compute = { "fresh" }, applyResult = {
+                assertEquals("fresh", it)
+                resumed.complete(Unit)
+            }, finished = {})
+            resumed.await()
+        }
+    }
     @Test fun lateOldResultCannotChangeNewGameOrClearItsThinkingState() = runBlocking {
         withTimeout(5000) {
             val session = GameSearchSession()
