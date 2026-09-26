@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalConfiguration
@@ -97,8 +98,13 @@ import kotlin.math.sqrt
 
 private val BoardBg = Color(0xFFF0EDE3)
 private val GridColor = Color(0xFF52675F)
-private val RedPiece = Color(0xFF246B5B)
-private val BlackPiece = Color(0xFF253342)
+// 两方棋子照象棋的老规矩：同一种浅色子面，红方朱砂字，黑方墨字，字外各勾一道同色圈。
+// 1.0.6 曾把两方改成墨青浅子与深蓝深子，殿下 2026-09-26 看了说不像象棋，要「白底黑字、
+// 白底红字」。子面比棋盘略暖一些，再垫一圈很淡的影子，免得浅子融进象牙白的盘里。
+private val PieceFace = Color(0xFFFFF8E8)
+private val PieceShadow = Color(0x2A000000)
+private val RedPiece = Color(0xFFB8322A)
+private val BlackPiece = Color(0xFF1E2326)
 private val SelectedRing = Color(0xFF257B65)
 private val LegalDot = Color(0xAA257B65)
 private val OpponentMoveColor = Color(0xFF1B6BFF)
@@ -260,7 +266,7 @@ private fun vibrateDouble(context: Context) {
 
 // ── Sound ──────────────────────────────────────────────────────────────────
 
-private class GameSounds(context: Context) {
+private class GameSounds(private val context: Context) {
     private val pool = SoundPool.Builder()
         .setMaxStreams(2)
         .setAudioAttributes(
@@ -276,9 +282,23 @@ private class GameSounds(context: Context) {
     // 也是棋盘上真正会喊的那一句。
     private val sayCaptureId = pool.load(context, R.raw.say_capture, 1)
     private val sayCheckId = pool.load(context, R.raw.say_check, 1)
-    private val bgm = android.media.MediaPlayer.create(context, R.raw.background_music)?.apply {
-        isLooping = true; setVolume(0.15f, 0.15f)
-    }
+    // 背景音乐播放器。MediaPlayer 有个脾气：还没 start 过就 pause，它会报错进入 Error
+    // 状态，之后再 start 也不出声。1.0.5 加了「退到后台就停音乐」，停在菜单页（音乐
+    // 本来就没开始）时抬腕放腕一下就踩中这条，此后整局都没音乐，殿下 2026-09-26 发现
+    // 「音乐打开之后好像没有音乐了」。所以只在真在放的时候才 pause；万一还是进了 Error，
+    // 就把它丢掉，下次要放时重建一个。
+    private var bgm: android.media.MediaPlayer? = createBgm()
+
+    private fun createBgm(): android.media.MediaPlayer? =
+        android.media.MediaPlayer.create(context, R.raw.background_music)?.apply {
+            isLooping = true; setVolume(0.15f, 0.15f)
+            setOnErrorListener { mp, what, extra ->
+                Log.w("WatchChess", "bgm error $what/$extra, recreating")
+                mp.release()
+                if (bgm === mp) bgm = null
+                true
+            }
+        }
 
     // 这两个开关要记住。2026-09-22 殿下说调试的时候把音乐音效关了，翻出来才发现关了
     // 也白关：它们只存在内存里，应用一重启就又回到开着。菜单里明明有这个开关，关掉之后
@@ -291,11 +311,15 @@ private class GameSounds(context: Context) {
     // 默认开，所以改回来。菜单里开关仍在，随时可关。
     var bgmOn = prefs.getBoolean(PREF_BGM_ON, true)
 
-    fun startBgm() { if (bgmOn) bgm?.start() }
-    fun stopBgm() { bgm?.pause() }
+    fun startBgm() {
+        if (!bgmOn) return
+        if (bgm == null) bgm = createBgm()
+        bgm?.start()
+    }
+    fun stopBgm() { bgm?.let { if (it.isPlaying) it.pause() } }
     fun toggleBgm(): Boolean {
         bgmOn = !bgmOn
-        if (bgmOn) bgm?.start() else bgm?.pause()
+        if (bgmOn) startBgm() else stopBgm()
         prefs.edit().putBoolean(PREF_BGM_ON, bgmOn).apply()
         return bgmOn
     }
@@ -308,7 +332,7 @@ private class GameSounds(context: Context) {
     fun playCapture() { if (sfxOn) pool.play(captureId, 0.8f, 0.8f, 1, 0, 1f) }
     fun sayCapture() { if (sfxOn) pool.play(sayCaptureId, 1f, 1f, 2, 0, 1f) }
     fun sayCheck() { if (sfxOn) pool.play(sayCheckId, 1f, 1f, 2, 0, 1f) }
-    fun release() { bgm?.release(); pool.release() }
+    fun release() { bgm?.release(); bgm = null; pool.release() }
 }
 
 // ── Root ───────────────────────────────────────────────────────────────────
@@ -1133,10 +1157,12 @@ private fun DrawScope.drawPieces(ox: Float, oy: Float, c: Float, pieces: List<Pi
         val cx = ox + flipCol(piece.position.col, flipped) * c
         val cy = oy + flipRow(piece.position.row, flipped) * c
         val ctr = Offset(cx, cy); val red = piece.color == PieceColor.RED
-        drawCircle(if (red) Color(0xFFFFFDF5) else BlackPiece, r, ctr)
-        drawCircle(if (red) RedPiece else BlackPiece, r, ctr, style = Stroke(1.8f))
-        drawCircle(if (red) RedPiece else BlackPiece, r * 0.80f, ctr, style = Stroke(0.8f))
-        tp.color = if (red) 0xFF246B5B.toInt() else 0xFFFFFDF5.toInt()
+        val ink = if (red) RedPiece else BlackPiece
+        drawCircle(PieceShadow, r, ctr + Offset(0f, c * 0.05f))
+        drawCircle(PieceFace, r, ctr)
+        drawCircle(ink, r, ctr, style = Stroke(1.8f))
+        drawCircle(ink, r * 0.80f, ctr, style = Stroke(0.8f))
+        tp.color = ink.toArgb()
         val fm = tp.fontMetrics
         drawContext.canvas.nativeCanvas.drawText(piece.type.getDisplayName(piece.color), cx, cy - (fm.ascent + fm.descent) / 2, tp)
     }
@@ -1205,12 +1231,12 @@ private fun DrawScope.drawCaptured(ox: Float, c: Float, captured: List<Piece>, t
             textSize = r * 1.15f
             textAlign = android.graphics.Paint.Align.CENTER
             isAntiAlias = true
-            color = if (side == PieceColor.RED) 0xFF246B5B.toInt() else 0xFFFFFDF5.toInt()
+            color = colour.toArgb()
         }
         val fm = tp.fontMetrics
         for ((i, piece) in shown.withIndex()) {
             val y = top + i * step
-            drawCircle(if (side == PieceColor.RED) Color(0xFFFFFDF5) else BlackPiece, r, Offset(x, y))
+            drawCircle(PieceFace, r, Offset(x, y))
             drawCircle(colour, r, Offset(x, y), style = Stroke(1.2f))
             drawContext.canvas.nativeCanvas.drawText(
                 piece.type.getDisplayName(piece.color), x, y - (fm.ascent + fm.descent) / 2, tp,

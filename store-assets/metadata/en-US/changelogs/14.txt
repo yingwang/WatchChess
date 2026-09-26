@@ -1,0 +1,1 @@
+Pieces are back to traditional red and black characters on light faces. Fixed background music staying silent while switched on.
