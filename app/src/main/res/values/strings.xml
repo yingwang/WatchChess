@@ -27,6 +27,23 @@
     <string name="menu_sound">Sound %1$s</string>
     <string name="menu_new_game">New game</string>
     <string name="menu_resume">Resume</string>
+    <string name="menu_sound_settings">Sound</string>
+    <string name="menu_back">Back</string>
+    <string name="new_game_confirm">Start a new game?</string>
+    <string name="new_game_lost">This game will be lost.</string>
+    <string name="new_game_keep">Keep playing</string>
+
+    <string name="status_your_move">Your move</string>
+    <string name="status_pick_square">Pick a square</string>
+    <string name="status_check">Check · your move</string>
+
+    <string name="result_you_won">You won</string>
+    <string name="result_you_lost">You lost</string>
+    <string name="reason_checkmate">Checkmate</string>
+    <string name="reason_no_moves">No legal moves</string>
+    <string name="reason_rules">Decided by the rules</string>
+    <string name="gameover_play_again">Play again</string>
+    <string name="gameover_view_board">View board</string>
 
     <string name="side_red">Red</string>
     <string name="side_black">Black</string>

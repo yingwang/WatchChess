@@ -171,6 +171,11 @@ private fun scrollPadding(): PaddingValues {
 // 上手提示只在装上之后的第一局出现一次，看过就记下来，之后不再打扰。
 private const val PREFS_NAME = "watchchess"
 private const val PREF_HELP_SEEN = "help_seen"
+/** 对局用时，秒。随棋谱一起存，离开应用那段不算。 */
+private const val PREF_ELAPSED = "elapsed_sec"
+/** 棋盘底下那行记谱停留多久，之后换回用时。 */
+private const val MOVE_BANNER_MS = 4000L
+private val ClockColor = Color(0xFFB5CCC4)
 private const val PREF_BGM_ON = "bgm_on"
 private const val PREF_SFX_ON = "sfx_on"
 
@@ -355,6 +360,14 @@ fun GameScreen() {
     var aiThinking by remember { mutableStateOf(false) }
     // 存资源 id，画的时候才解析成当前语言的字。
     var gameOverMsg by remember { mutableStateOf<Int?>(null) }
+    // 终局的缘由：将死、困毙，或是引擎按规则裁定（长将、长捉、重复）。
+    var gameOverReason by remember { mutableStateOf<Int?>(null) }
+    // 终局页点了「查看棋盘」就收起；再点一下棋盘它又回来。
+    var resultDismissed by remember { mutableStateOf(false) }
+    // 刚走的那一着的记谱。走完在棋盘底下停几秒，回到前台时再显示一次，抬腕就知道局面。
+    var lastMoveText by remember { mutableStateOf<String?>(null) }
+    var moveBanner by remember { mutableStateOf<String?>(null) }
+    var bannerTick by remember { mutableIntStateOf(0) }
     var retryNeeded by remember { mutableStateOf(false) }
     var gameStartTime by remember { mutableLongStateOf(0L) }
     var elapsedSec by remember { mutableIntStateOf(0) }
@@ -374,6 +387,8 @@ fun GameScreen() {
     var rotaryAcc by remember { mutableFloatStateOf(0f) }
 
     val context = LocalContext.current
+    // 记谱按表的系统语言：中文用纵线记谱，其余用 WXF 字母。
+    val chineseNotation = remember { context.resources.configuration.locales[0].language == "zh" }
     val lifecycleOwner = LocalLifecycleOwner.current
     var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
     val scope = rememberCoroutineScope()
@@ -419,7 +434,11 @@ fun GameScreen() {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, _ ->
             foreground = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-            if (!foreground) { searches.invalidate(); aiThinking = false; sounds.stopBgm() }
+            if (!foreground) {
+                searches.invalidate(); aiThinking = false; sounds.stopBgm()
+                // 离开时记下用时，回来接着算，中间那段不计。
+                prefs.edit().putInt(PREF_ELAPSED, elapsedSec).apply()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
@@ -430,11 +449,19 @@ fun GameScreen() {
         }
     }
 
-    // Timer
+    // 用时只在前台、对局进行中走动。原先是「现在减开局时刻」，离开应用十分钟再回来，
+    // 那十分钟也算进去了；现在离开就停，用时随棋谱存起来，回来接着数。
     LaunchedEffect(screen, gameOverMsg, foreground) {
         if (screen == "game" && gameOverMsg == null && foreground) {
-            while (true) { delay(1000); if (gameStartTime > 0) elapsedSec = ((System.currentTimeMillis() - gameStartTime) / 1000).toInt() }
+            while (true) { delay(1000); elapsedSec++ }
         }
+    }
+    LaunchedEffect(bannerTick) {
+        if (bannerTick > 0) { delay(MOVE_BANNER_MS); moveBanner = null }
+    }
+    // 回到前台时把刚才那一着再亮几秒，抬腕回来就看得懂局面。
+    LaunchedEffect(foreground) {
+        if (foreground && screen == "game" && lastMoveText != null) { moveBanner = lastMoveText; bannerTick++ }
     }
 
     fun startGame(difficulty: Int, side: PieceColor) {
@@ -450,6 +477,7 @@ fun GameScreen() {
         aiThinking = false; gameOverMsg = null; retryNeeded = false; showMenu = false
         playedFrom.clear(); positionHistory = listOf(board.toFen())
         gameStartTime = System.currentTimeMillis(); elapsedSec = 0; moveCount = 0
+        gameOverReason = null; resultDismissed = false; lastMoveText = null; moveBanner = null
         screen = "game"; sounds.startBgm()
         // 第一次开局时把操作说明摆出来，就在人正要动手的那一刻，不必他自己去找。
         if (!prefs.getBoolean(PREF_HELP_SEEN, false)) {
@@ -467,6 +495,10 @@ fun GameScreen() {
         }
         return null
     }
+
+    /** 无子可走的一方，被将着就是将死，否则是困毙。 */
+    fun matedReason(b: Board): Int =
+        if (b.isInCheck(b.currentPlayer)) R.string.reason_checkmate else R.string.reason_no_moves
 
     fun aiMove() {
         if (gameOverMsg != null || aiThinking || screen != "game" || !foreground) return
@@ -504,18 +536,26 @@ fun GameScreen() {
             val move = result.move
             val transientFailure = result.messageRes == R.string.result_unavailable || result.messageRes == R.string.engine_no_move
             if (screen == "game" && board === searchBoard) retryNeeded = transientFailure
-            if (move == null && screen == "game" && board === searchBoard) gameOverMsg = result.messageRes.takeUnless { transientFailure }
+            if (move == null && screen == "game" && board === searchBoard) {
+                gameOverMsg = result.messageRes.takeUnless { transientFailure }
+                if (gameOverMsg != null) gameOverReason = R.string.reason_rules
+            }
             if (move != null && screen == "game" && board === searchBoard) {
                 playedFrom.getOrPut(positionKey) { mutableSetOf() }.add(move.toUci())
                 undoStack = undoStack + Snapshot(board, move)
+                val text = moveNotation(board, move, chineseNotation)
                 val nb = board.makeMove(move); nb.currentPlayer = board.currentPlayer.opposite()
                 board = nb; lastMove = move; moveHistory = moveHistory + move
+                lastMoveText = text; moveBanner = text; bannerTick++
                 positionHistory = positionHistory + nb.toFen()
                 if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
                 else { sounds.playMove(); vibrate(context) }
-                gameOverMsg = checkGameOver(board) ?: result.messageRes.takeUnless { transientFailure }
-                if (gameOverMsg != null) vibrate(context, 100)
-                else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
+                val mated = checkGameOver(board)
+                gameOverMsg = mated ?: result.messageRes.takeUnless { transientFailure }
+                if (gameOverMsg != null) {
+                    gameOverReason = if (mated != null) matedReason(board) else R.string.reason_rules
+                    vibrate(context, 100)
+                } else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
             }
         }, finished = { aiThinking = false })
     }
@@ -535,13 +575,15 @@ fun GameScreen() {
         board = undoStack[keep].board
         undoStack = undoStack.take(keep); moveHistory = moveHistory.take(keep)
         positionHistory = positionHistory.take(keep + 1)
-        gameOverMsg = null
+        gameOverMsg = null; gameOverReason = null; resultDismissed = false
         retryNeeded = false
         playedFrom.clear()
         undoStack.filter { it.move.piece.color != playerColor }.forEach {
             playedFrom.getOrPut(it.board.toFen()) { mutableSetOf() }.add(it.move.toUci())
         }
         lastMove = moveHistory.lastOrNull(); selectedPos = null; legalMoves = emptyList()
+        lastMoveText = undoStack.lastOrNull()?.let { moveNotation(it.board, it.move, chineseNotation) }
+        moveBanner = null
         moveCount = moveHistory.count { it.piece.color == playerColor }
         vibrate(context, 20); showMenu = false
     }
@@ -551,14 +593,16 @@ fun GameScreen() {
         val moveToMake = legalMoves.find { it.to == pos }
         if (moveToMake != null) {
             undoStack = undoStack + Snapshot(board, moveToMake)
+            val text = moveNotation(board, moveToMake, chineseNotation)
             val nb = board.makeMove(moveToMake); nb.currentPlayer = board.currentPlayer.opposite()
             board = nb; lastMove = moveToMake; moveHistory = moveHistory + moveToMake
+            lastMoveText = text; moveBanner = text; bannerTick++
             positionHistory = positionHistory + nb.toFen()
             selectedPos = null; legalMoves = emptyList(); moveCount++
             if (moveToMake.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
             else { sounds.playMove(); vibrate(context) }
             gameOverMsg = checkGameOver(board)
-            if (gameOverMsg != null) { vibrate(context, 100) } else {
+            if (gameOverMsg != null) { gameOverReason = matedReason(board); vibrate(context, 100) } else {
                 if (board.isInCheck(board.currentPlayer)) sounds.sayCheck()
                 aiMove()
             }
@@ -595,6 +639,11 @@ fun GameScreen() {
             gameOverMsg = saved.terminalResultName()?.let {
                 context.resources.getIdentifier(it, "string", context.packageName).takeIf { id -> id != 0 }
             }
+            gameOverReason = gameOverMsg?.let { if (checkGameOver(board) != null) matedReason(board) else R.string.reason_rules }
+            lastMoveText = replay.lastOrNull()?.let { (before, move) -> moveNotation(before, move, chineseNotation) }
+            // 新存档带着用时；老存档没有，照从前那样按开局时刻算这一次。
+            elapsedSec = prefs.getInt(PREF_ELAPSED, -1).takeIf { it >= 0 }
+                ?: ((System.currentTimeMillis() - saved.startedAt) / 1000).toInt().coerceAtLeast(0)
             replay.filter { it.second.piece.color != playerColor }.forEach { (before, move) ->
                 playedFrom.getOrPut(before.toFen()) { mutableSetOf() }.add(move.toUci())
             }
@@ -612,7 +661,7 @@ fun GameScreen() {
                 moveHistory.map { it.toUci() }).encode() else null
             if (encoded != lastSaved) {
                 // apply immediately updates memory and queues ordered disk writes off the UI thread.
-                prefs.edit().putString("saved_game_v1", encoded).apply()
+                prefs.edit().putString("saved_game_v1", encoded).putInt(PREF_ELAPSED, elapsedSec).apply()
                 lastSaved = encoded
             }
         }
@@ -699,25 +748,42 @@ fun GameScreen() {
             onBack = { screen = "menu" },
         )
     } else {
+        val over = gameOverMsg
+        // 棋盘顶上那行随操作变：轮到你、选择落点、对手思考中、将军，终局后是结果。
+        val statusLabel = when {
+            over != null -> stringResource(over)
+            aiThinking -> stringResource(R.string.thinking, stringResource(DIFFICULTIES[diffIdx].nameRes))
+            selectedPos != null -> stringResource(R.string.status_pick_square)
+            board.isInCheck(board.currentPlayer) -> stringResource(R.string.status_check)
+            else -> stringResource(R.string.status_your_move)
+        }
+        BackHandler(enabled = over != null && !resultDismissed) { resultDismissed = true }
         Box(Modifier.fillMaxSize()) {
             // Board layer
             BoardCanvas(
                 board = board, selectedPos = selectedPos, legalMoves = legalMoves,
                 lastMove = lastMove, aiThinking = aiThinking,
-                gameOverMsg = gameOverMsg?.let { stringResource(it) } ?: if (retryNeeded) stringResource(R.string.engine_retry) else null,
+                pauseMsg = if (retryNeeded) stringResource(R.string.engine_retry) else null,
+                gameOver = over != null,
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
                 menuShowing = showMenu,
                 captured = capturedPieces,
                 flipped = playerColor == PieceColor.BLACK,
                 playerColor = playerColor,
-                diffName = stringResource(DIFFICULTIES[diffIdx].nameRes),
-                thinkingLabel = stringResource(R.string.thinking, stringResource(DIFFICULTIES[diffIdx].nameRes)),
-                tapToReturn = stringResource(if (retryNeeded) R.string.tap_to_retry else R.string.tap_to_return),
-                elapsedSec = elapsedSec,
+                topLabel = statusLabel,
+                topHighlight = aiThinking,
+                // 底下那行平时是用时，刚走完一着的几秒里换成记谱，颜色跟棋盘上的圈一样：自己绿，对方蓝。
+                bottomLabel = moveBanner ?: "%d:%02d".format(elapsedSec / 60, elapsedSec % 60),
+                bottomColor = when {
+                    moveBanner == null -> ClockColor
+                    lastMove?.piece?.color == playerColor -> OwnMoveColor
+                    else -> OpponentMoveColor
+                }.toArgb(),
+                tapToRetry = stringResource(R.string.tap_to_retry),
                 onConfirm = { onConfirm() },
                 onRotary = { onRotary(it) },
                 onLongPress = { showMenu = !showMenu },
-                onGameOverTap = { if (retryNeeded) aiMove() else returnToMenu() },
+                onGameOverTap = { if (retryNeeded) aiMove() else resultDismissed = false },
             )
             // Menu overlay
             if (showMenu) {
@@ -734,6 +800,24 @@ fun GameScreen() {
                     onNewGame = { returnToMenu() },
                     onHelp = { showMenu = false; showHelp = true },
                     onDismiss = { showMenu = false },
+                )
+            }
+            // 终局页：谁赢了、为什么，再来一局或者看棋盘。看棋盘之后点一下棋盘它又回来。
+            if (over != null && !resultDismissed && !showMenu) {
+                val youWon = (over == R.string.result_red_wins && playerColor == PieceColor.RED) ||
+                    (over == R.string.result_black_wins && playerColor == PieceColor.BLACK)
+                GameOverSheet(
+                    title = stringResource(when {
+                        over == R.string.result_draw -> R.string.result_draw
+                        youWon -> R.string.result_you_won
+                        else -> R.string.result_you_lost
+                    }),
+                    detail = listOfNotNull(
+                        stringResource(over).takeIf { over != R.string.result_draw },
+                        gameOverReason?.let { stringResource(it) },
+                    ).joinToString(" · "),
+                    onPlayAgain = { startGame(diffIdx, playerColor) },
+                    onViewBoard = { resultDismissed = true },
                 )
             }
             // 说明层压在菜单之上，这样从菜单点进来时盖得住它。
@@ -884,6 +968,13 @@ private fun WatchButton(
 
 // ── In-Game Menu Overlay ───────────────────────────────────────────────────
 
+/**
+ * 长按棋盘出来的菜单。
+ *
+ * 原先六个按钮平铺：悔棋、音乐、音效、新局、帮助、继续，常用的「继续」排在最末，要滚到底
+ * 才按得到，音乐音效这种一局调一次的占着中间。现在第一屏只放常用的：继续、悔棋在最前，
+ * 新局要先确认一下（一按就丢掉当前这盘太容易误触），音乐音效收进「声音」里，帮助留在最后。
+ */
 @Composable
 private fun InGameMenu(
     diffName: String,
@@ -899,14 +990,15 @@ private fun InGameMenu(
     onHelp: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    // 两行字加五个按钮竖着排，比这块圆屏高，最底下那个「继续」会被切掉，殿下
-    // 2026-09-20 说「最下面那个选项没有显示全」。圆屏上下还要各让出一块，可用的高度
-    // 比看上去更少。所以这里让它能滚，并且把表冠接上去滚，跟棋盘那边同一套手势。
-    // 上下各留一段空白，好让首尾两项都能滚到屏幕中间，不至于卡在圆边上。
+    // 两行字加按钮竖着排，比这块圆屏高，所以让它能滚，并且把表冠接上去滚，跟棋盘那边
+    // 同一套手势。上下各留一段空白，好让首尾两项都能滚到屏幕中间，不至于卡在圆边上。
     val listState = rememberScalingLazyListState()
     val menuFocus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
+    var page by remember { mutableStateOf(MenuPage.MAIN) }
     LaunchedEffect(Unit) { menuFocus.requestFocus() }
+    // 右滑从子页回主页，再滑才关菜单。
+    BackHandler(enabled = page != MenuPage.MAIN) { page = MenuPage.MAIN }
 
     Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
         Box(
@@ -928,22 +1020,82 @@ private fun InGameMenu(
                     .focusRequester(menuFocus)
                     .focusable(),
             ) {
-                item {
-                    val min = elapsedSec / 60; val sec = elapsedSec % 60
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CenteredLine(diffName, MenuHeading, 13.sp)
-                        CenteredLine(
-                            stringResource(R.string.clock_moves, min, sec, moveCount + 1),
-                            Color(0xAAFFFFFF), 11.sp,
-                        )
+                when (page) {
+                    MenuPage.MAIN -> {
+                        item {
+                            val min = elapsedSec / 60; val sec = elapsedSec % 60
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CenteredLine(diffName, MenuHeading, 13.sp)
+                                CenteredLine(
+                                    stringResource(R.string.clock_moves, min, sec, moveCount + 1),
+                                    Color(0xAAFFFFFF), 11.sp,
+                                )
+                            }
+                        }
+                        item { WatchButton(stringResource(R.string.menu_resume), onDismiss) }
+                        item { WatchButton(stringResource(R.string.menu_undo), onUndo, enabled = canUndo) }
+                        item { WatchButton(stringResource(R.string.menu_new_game), { page = MenuPage.CONFIRM_NEW }) }
+                        item { WatchButton(stringResource(R.string.menu_sound_settings), { page = MenuPage.SOUND }) }
+                        item { WatchButton(stringResource(R.string.menu_help), onHelp) }
+                    }
+                    MenuPage.SOUND -> {
+                        item { CenteredLine(stringResource(R.string.menu_sound_settings), MenuHeading, 13.sp) }
+                        item { WatchButton(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), onToggleBgm) }
+                        item { WatchButton(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), onToggleSfx) }
+                        item { WatchButton(stringResource(R.string.menu_back), { page = MenuPage.MAIN }) }
+                    }
+                    MenuPage.CONFIRM_NEW -> {
+                        item { CenteredLine(stringResource(R.string.new_game_confirm), MenuHeading, 13.sp) }
+                        item { CenteredLine(stringResource(R.string.new_game_lost), Color(0xAAFFFFFF), 11.sp) }
+                        item { WatchButton(stringResource(R.string.menu_new_game), onNewGame) }
+                        item { WatchButton(stringResource(R.string.new_game_keep), onDismiss) }
                     }
                 }
-                item { WatchButton(stringResource(R.string.menu_undo), onUndo, enabled = canUndo) }
-                item { WatchButton(stringResource(R.string.menu_music, stringResource(if (bgmOn) R.string.state_on else R.string.state_off)), onToggleBgm) }
-                item { WatchButton(stringResource(R.string.menu_sound, stringResource(if (sfxOn) R.string.state_on else R.string.state_off)), onToggleSfx) }
-                item { WatchButton(stringResource(R.string.menu_new_game), onNewGame) }
-                item { WatchButton(stringResource(R.string.menu_help), onHelp) }
-                item { WatchButton(stringResource(R.string.menu_resume), onDismiss) }
+            }
+        }
+    }
+}
+
+private enum class MenuPage { MAIN, SOUND, CONFIRM_NEW }
+
+// ── Game Over ──────────────────────────────────────────────────────────────
+
+/**
+ * 终局页，盖在棋盘上。
+ *
+ * 原先只在棋盘上盖一层「红胜」，点一下就回到难度菜单，看不到为什么输、也看不到最后的
+ * 盘面。现在头一行写你赢了还是输了，第二行写哪方胜、因何而终（将死、困毙、按规则判定），
+ * 再给两个去处：再来一局（照原来的难度和执子方直接开），或者看棋盘。看过棋盘再点一下
+ * 棋盘，这一页就回来；右滑等于看棋盘。
+ */
+@Composable
+private fun GameOverSheet(title: String, detail: String, onPlayAgain: () -> Unit, onViewBoard: () -> Unit) {
+    val listState = rememberScalingLazyListState()
+    val focus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    Scaffold(positionIndicator = { PositionIndicator(scalingLazyListState = listState) }) {
+        Box(Modifier.fillMaxSize().background(Color(0xE6000000)), contentAlignment = Alignment.Center) {
+            ScalingLazyColumn(
+                state = listState,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = scrollPadding(),
+                scalingParams = edgeFadeParams(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onRotaryScrollEvent {
+                        scope.launch { listState.scrollBy(it.verticalScrollPixels) }
+                        true
+                    }
+                    .focusRequester(focus)
+                    .focusable(),
+            ) {
+                item { CenteredLine(title, Color.White, 18.sp) }
+                if (detail.isNotEmpty()) item { CenteredLine(detail, Color(0xAAFFFFFF), 11.sp) }
+                item { WatchButton(stringResource(R.string.gameover_play_again), onPlayAgain, selected = true) }
+                item { WatchButton(stringResource(R.string.gameover_view_board), onViewBoard) }
             }
         }
     }
@@ -1031,17 +1183,20 @@ private fun BoardCanvas(
     legalMoves: List<Move>,
     lastMove: Move?,
     aiThinking: Boolean,
-    gameOverMsg: String?,
+    /** 引擎停摆时盖在棋盘上的那句，点一下重试；终局不再走这里。 */
+    pauseMsg: String?,
+    gameOver: Boolean,
     cursorPos: Position?,
     pickingDestination: Boolean,
     menuShowing: Boolean,
     captured: List<Piece>,
     flipped: Boolean,
     playerColor: PieceColor,
-    diffName: String,
-    thinkingLabel: String,
-    tapToReturn: String,
-    elapsedSec: Int,
+    topLabel: String,
+    topHighlight: Boolean,
+    bottomLabel: String,
+    bottomColor: Int,
+    tapToRetry: String,
     onConfirm: () -> Unit,
     onRotary: (Float) -> Boolean,
     onLongPress: () -> Unit,
@@ -1067,7 +1222,8 @@ private fun BoardCanvas(
     val confirm by rememberUpdatedState(onConfirm)
     val longPress by rememberUpdatedState(onLongPress)
     val gameOverTap by rememberUpdatedState(onGameOverTap)
-    val overMsg by rememberUpdatedState(gameOverMsg)
+    val overMsg by rememberUpdatedState(pauseMsg)
+    val over by rememberUpdatedState(gameOver)
 
     Canvas(
         modifier = Modifier
@@ -1080,7 +1236,7 @@ private fun BoardCanvas(
                 detectTapGestures(
                     // 点屏幕任意一处就是确认当前亮着的那个，位置不参与判断，
                     // 所以不存在「点到了别的子」这种事，也不需要瞄准。
-                    onTap = { if (overMsg != null) gameOverTap() else confirm() },
+                    onTap = { if (overMsg != null || over) gameOverTap() else confirm() },
                     onLongPress = { longPress() },
                 )
             },
@@ -1101,12 +1257,12 @@ private fun BoardCanvas(
         }
         drawCursor(ox, oy, cell, cursorPos, pickingDestination, flipped)
 
-        if (inCheck && gameOverMsg == null)
+        if (inCheck && !gameOver && pauseMsg == null)
             drawCheckGlow(ox, oy, cell, board, flipped)
 
-        drawStatusLines(cell, oy, bh, diffName, thinkingLabel, elapsedSec, aiThinking, fontScale, round, paints.status)
+        drawStatusLines(cell, oy, bh, topLabel, topHighlight, bottomLabel, bottomColor, fontScale, round, paints.status)
 
-        if (gameOverMsg != null) drawGameOver(gameOverMsg, tapToReturn, cell, fontScale, round, paints.result, paints.hint)
+        if (pauseMsg != null) drawGameOver(pauseMsg, tapToRetry, cell, fontScale, round, paints.result, paints.hint)
     }
 }
 
@@ -1302,7 +1458,8 @@ private fun DrawScope.drawTextFitted(
 }
 
 /**
- * 棋盘上下两行字：上面是难度或者「思考中」，下面是用时。
+ * 棋盘上下两行字：上面是操作状态（轮到你、选择落点、思考中、将军，终局后是结果），
+ * 下面平时是用时，刚走完一着的几秒里是那一着的记谱。
  *
  * 字号乘上系统设置里的倍率，再交给 drawTextFitted 按所在高度的弦长收一收。两件事缺一
  * 不可：只跟随字号不收，调大之后英文那句「Beginner · thinking」会从圆边两侧探出去；
@@ -1312,10 +1469,10 @@ private fun DrawScope.drawStatusLines(
     c: Float,
     boardTop: Float,
     boardHeight: Float,
-    diffName: String,
-    thinkingLabel: String,
-    elapsedSec: Int,
-    thinking: Boolean,
+    topLabel: String,
+    topHighlight: Boolean,
+    bottomLabel: String,
+    bottomColor: Int,
     fontScale: Float,
     round: Boolean,
     statusPaint: android.graphics.Paint,
@@ -1330,14 +1487,8 @@ private fun DrawScope.drawStatusLines(
 
     // 棋盘的木底比格线本身还各外扩半格，所以这里以它的外缘为界
     val boardPad = c * 0.48f
-    val top = if (thinking) thinkingLabel else diffName
-    drawTextFitted(top, 0f, boardTop - boardPad, paint(if (thinking) 0xFFE5D3A0.toInt() else 0xFFB5CCC4.toInt()), round)
-
-    drawTextFitted(
-        "%d:%02d".format(elapsedSec / 60, elapsedSec % 60),
-        boardTop + boardHeight + boardPad, size.height,
-        paint(0xFFB5CCC4.toInt()), round,
-    )
+    drawTextFitted(topLabel, 0f, boardTop - boardPad, paint(if (topHighlight) 0xFFE5D3A0.toInt() else 0xFFB5CCC4.toInt()), round)
+    drawTextFitted(bottomLabel, boardTop + boardHeight + boardPad, size.height, paint(bottomColor), round)
 }
 
 /**

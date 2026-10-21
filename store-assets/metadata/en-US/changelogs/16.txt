@@ -1,0 +1,1 @@
+The game clock pauses while you are away. The menu puts Resume and Undo first, keeps sound settings in their own page, and asks before starting a new game. When a game ends you see whether you won and why, with Play again and View board. The line above the board now says whose move it is, and the last move is shown in notation below it.

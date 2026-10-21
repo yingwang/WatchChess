@@ -19,6 +19,23 @@
     <string name="menu_sound">音效 %1$s</string>
     <string name="menu_new_game">新局</string>
     <string name="menu_resume">继续</string>
+    <string name="menu_sound_settings">声音</string>
+    <string name="menu_back">返回</string>
+    <string name="new_game_confirm">开始新的一局？</string>
+    <string name="new_game_lost">当前这盘棋会丢掉。</string>
+    <string name="new_game_keep">继续下</string>
+
+    <string name="status_your_move">轮到你</string>
+    <string name="status_pick_square">选择落点</string>
+    <string name="status_check">将军 · 轮到你</string>
+
+    <string name="result_you_won">你赢了</string>
+    <string name="result_you_lost">你输了</string>
+    <string name="reason_checkmate">将死</string>
+    <string name="reason_no_moves">困毙</string>
+    <string name="reason_rules">按规则判定</string>
+    <string name="gameover_play_again">再来一局</string>
+    <string name="gameover_view_board">查看棋盘</string>
 
     <string name="side_red">执红</string>
     <string name="side_black">执黑</string>
