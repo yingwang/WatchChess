@@ -22,3 +22,4 @@ icon-work/
 
 # 审核复查时在表上抓的截图与量化脚本，属于验证过程不进版本库
 qa-shots/
+/releases
