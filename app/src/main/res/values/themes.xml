@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WatchChess" parent="@android:style/Theme.DeviceDefault" />
+
+    <!-- Shown while the app starts: the launcher icon at 48dp on black, as the Wear OS quality
+         guidelines ask for (WatchReader was turned down by Play for lacking it). Once the
+         activity is up it switches to the app's own theme.
+
+         The icon is given a background in its own colour (the white behind the piece), so it
+         looks exactly like the launcher icon. That matters for the size too: from Wear OS 4 the
+         system draws this screen, and it enlarges an icon that has no background, while an icon
+         with a background is shown at 48dp. -->
+    <style name="Theme.WatchChess.Starting" parent="Theme.SplashScreen.IconBackground">
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/icon_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_screen_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.WatchChess</item>
+    </style>
+</resources>

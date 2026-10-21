@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher icon, held at 48dp in the middle of whatever space the launch screen gives it,
+     so it appears at the size Wear OS asks for rather than scaled up to fill that space. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="@dimen/splash_screen_icon_size"
+        android:height="@dimen/splash_screen_icon_size"
+        android:drawable="@mipmap/ic_launcher"
+        android:gravity="center" />
+</layer-list>

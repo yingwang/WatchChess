@@ -16,8 +16,8 @@ android {
         // Play 不再接受 targetSdk 34 的新应用，提交时会被退回，报 "Target SDK of
         // artifact is too low"。跟到 36。
         targetSdk = 36
-        versionCode = 14
-        versionName = "1.0.7"
+        versionCode = 15
+        versionName = "1.0.8"
     }
 
     buildFeatures {
@@ -78,13 +78,15 @@ android {
 }
 
 dependencies {
-    implementation("androidx.wear.compose:compose-material:1.3.0")
-    implementation("androidx.wear.compose:compose-foundation:1.3.0")
+    implementation("androidx.wear.compose:compose-material:1.4.0")
+    implementation("androidx.wear.compose:compose-foundation:1.4.0")
     implementation("androidx.compose.ui:ui:1.6.1")
     implementation("androidx.compose.runtime:runtime:1.6.1")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.core:core-ktx:1.12.0")
+    // The launch screen Wear OS asks for: the app icon at 48dp on black while the app starts.
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     testImplementation("junit:junit:4.13.2")
 }

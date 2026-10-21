@@ -1,0 +1,1 @@
+Fixes a crash on Wear OS 5 and later when a scrolling list opens, and shows the app icon while the app starts.
