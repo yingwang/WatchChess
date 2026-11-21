@@ -56,11 +56,17 @@ on any CPU. The time limit is only a backstop so a move cannot cook the watch.
 Run `scripts/build-fairy-engine.sh` before building. It cross-compiles the engine
 from a pinned upstream revision and applies `scripts/fairy-adjudicate.patch`, which
 adds the `watchresult` command the app uses to adjudicate repetitions. **A stock
-Fairy-Stockfish build will not work**: without that command every position reports
-as unadjudicable and the game stops with 裁决失败. The binary is not committed.
+Fairy-Stockfish build will not work properly**: without that command no position
+can be adjudicated, so every engine move first pauses for a tap to retry, and the
+retry carries on without repetition rules. The binary is not committed.
 
-The original engine is kept as a fallback and answers whenever Fairy-Stockfish
-fails to start or dies mid-game. It is pure Kotlin alpha-beta pruning with:
+The original engine is kept as a fallback. It plays whenever Fairy-Stockfish fails
+to start, dies mid-game, or returns a move the app does not accept. On that path
+only checkmate and stalemate are judged, on the watch itself; perpetual check,
+perpetual chase and repetition go unjudged. If Fairy-Stockfish is running but an
+adjudication fails, the game pauses once for a tap to retry, and a retry that fails
+again is judged the same local way, so a game never stays stuck. The fallback is
+pure Kotlin alpha-beta pruning with:
 - Iterative deepening & aspiration windows
 - Transposition tables (Zobrist hashing)
 - Null move pruning & late move reductions

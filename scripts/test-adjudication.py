@@ -39,6 +39,15 @@ upstream("soldier-chase-exempt", "2bakabr1/9/9/r1p1p1p2/p7R/P8/9/9/9/1C1AKA3 w -
     "a5a6 a7b7 a6b6 b7a7 b6a6 a7b7 a6b6 b7a7 b6a6".split(), "draw")
 upstream("mutual-check-draw", "9/4c4/3k5/3r5/9/9/4C4/9/4K4/3R5 w - - 0 1",
     "e4d4 d7e7 d4e4 e7d7".split() * 2, "draw")
+# Natural move limit: 60 moves (120 plies) without a capture. The variant itself says 50,
+# but under UCI-Cyclone the AXF rule credits 20 plies once 20 plies of history exist, so
+# the clock starts at 97/98 and 22 quiet, non-repeating, non-checking rook moves follow.
+# A plain 50-move limit would already call 119 a draw; a 70-move one would not call 120.
+natural_fen = "fen 3k5/9/9/8r/9/9/R8/9/9/5K3 w - - {} 1"
+natural_moves = ("a3b3 i6h6 b3c3 h6g6 c3e3 g6e6 e3f3 e6d6 f3g3 d6c6 g3h3 c6b6 "
+                 "h3i3 b6a6 i3i2 a6a7 i2h2 a7b7 h2g2 b7c7 g2f2 c7d7").split()
+add("natural-limit-ongoing-at-119-plies", natural_fen.format(97), natural_moves, "ongoing")
+add("natural-limit-draw-at-120-plies", natural_fen.format(98), natural_moves, "draw")
 add("red-stalemate-loses", "fen 3k5/9/9/9/9/9/9/9/3r1r3/4K4 w - - 0 1", [], "black")
 add("black-stalemate-loses", "fen 4k4/3R1R3/9/9/9/9/9/9/9/3K5 b - - 0 1", [], "red")
 

@@ -80,6 +80,8 @@ import com.yingwang.watchchess.R
 import com.yingwang.watchchess.ai.ChessAI
 import com.yingwang.watchchess.ai.FairyEngine
 import com.yingwang.watchchess.ai.GameVerdict
+import com.yingwang.watchchess.ai.localVerdict
+import com.yingwang.watchchess.ai.settleVerdict
 import com.yingwang.watchchess.ai.toFen
 import com.yingwang.watchchess.ai.toUci
 import kotlinx.coroutines.Dispatchers
@@ -404,7 +406,8 @@ fun GameScreen() {
     var ai by remember { mutableStateOf(ChessAI(maxDepth = 3, timeLimit = 2000, quiescenceDepth = 2)) }
 
     // 引擎跑在一个外部进程里。它起不来的情形是有的（包里没带、系统不让执行），
-    // 所以内置那个 Kotlin 引擎一直留着顶班，绝不让棋下不下去。
+    // 这时由内置那个 Kotlin 引擎接着下，将死与困毙在本地判，长将、长捉与重复在这条路上
+    // 不判。引擎在跑却裁决失败时先暂停让人重试，重试仍失败也同样改由本地接着下，见 aiMove。
     //
     // 菜单中保留预热进程；取消正在进行的搜索时回收进程，下次求着自动重启。
     val engine = remember { FairyEngine(context) }
@@ -436,8 +439,9 @@ fun GameScreen() {
             foreground = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
             if (!foreground) {
                 searches.invalidate(); aiThinking = false; sounds.stopBgm()
-                // 离开时记下用时，回来接着算，中间那段不计。
-                prefs.edit().putInt(PREF_ELAPSED, elapsedSec).apply()
+                // 离开时记下用时，回来接着算，中间那段不计。存档还没恢复完时 elapsedSec 仍是 0，
+                // 这时写进去会把存着的用时盖掉，恢复那边随后读到的就是 0。
+                if (saveReady) prefs.edit().putInt(PREF_ELAPSED, elapsedSec).apply()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -502,6 +506,8 @@ fun GameScreen() {
 
     fun aiMove() {
         if (gameOverMsg != null || aiThinking || screen != "game" || !foreground) return
+        // 这一次是不是在重试。重试时引擎仍裁决不了，就改由本地判，见 settleVerdict。
+        val retrying = retryNeeded
         retryNeeded = false
         aiThinking = true
         val searchBoard = board
@@ -512,25 +518,27 @@ fun GameScreen() {
         val alreadyPlayed = playedFrom[positionKey].orEmpty().toSet()
         searches.search(scope, compute = {
             // 取消旧搜索会关闭旧进程；下一次调用在同一把锁内重新启动，避免协议串线。
-            if (!engine.isRunning) engineReady = engine.start()
-            val before = if (engineReady) engine.adjudicate(searchHistory) else GameVerdict.UNAVAILABLE
+            // 一步棋里最多重启一次：起不来的引擎每试一回都可能等满握手时限，不值得试两遍。
+            var startTried = false
+            suspend fun judge(history: List<Move>, position: () -> Board): GameVerdict {
+                if (!engine.isRunning && !startTried) { startTried = true; engineReady = engine.start() }
+                val answer = if (engine.isRunning) engine.adjudicate(history) else null
+                return settleVerdict(answer, retrying) { position().localVerdict() }
+            }
+            val before = judge(searchHistory) { searchBoard }
             if (before != GameVerdict.ONGOING) return@search TurnResult(null, before.messageRes)
             // Returning from the background may only require retrying adjudication after an AI move.
             if (searchBoard.currentPlayer == playerColor) return@search TurnResult(null, null)
-            val move = if (engineReady) {
-                engine.findBestMove(
-                    searchBoard, searchHistory, d.nodes, d.timeMs,
-                    d.spreadCp,
-                    alreadyPlayed,
-                )
-                    // 引擎中途死了就当场退回内置的，这一步棋照样走得出来
-                    ?: withContext(Dispatchers.Default) { fallbackAi.findBestMove(searchBoard, searchHistory) }
-            } else {
-                withContext(Dispatchers.Default) { fallbackAi.findBestMove(searchBoard, searchHistory) }
-            }
+            // 引擎没在跑时 findBestMove 直接返回 null；中途死了也一样。两种情形都由内置的接着下。
+            val move = engine.findBestMove(
+                searchBoard, searchHistory, d.nodes, d.timeMs,
+                d.spreadCp,
+                alreadyPlayed,
+            ) ?: withContext(Dispatchers.Default) { fallbackAi.findBestMove(searchBoard, searchHistory) }
             if (move == null) return@search TurnResult(null, R.string.engine_no_move)
-            if (!engine.isRunning) engineReady = engine.start()
-            val after = if (engineReady) engine.adjudicate(searchHistory + move) else GameVerdict.UNAVAILABLE
+            val after = judge(searchHistory + move) {
+                searchBoard.makeMove(move).also { it.currentPlayer = searchBoard.currentPlayer.opposite() }
+            }
             TurnResult(move, after.messageRes)
         }, applyResult = { result ->
             val move = result.move
@@ -538,7 +546,8 @@ fun GameScreen() {
             if (screen == "game" && board === searchBoard) retryNeeded = transientFailure
             if (move == null && screen == "game" && board === searchBoard) {
                 gameOverMsg = result.messageRes.takeUnless { transientFailure }
-                if (gameOverMsg != null) gameOverReason = R.string.reason_rules
+                // 引擎不在时这一路的结局来自本地判，那就是将死或困毙，不是规则裁定。
+                if (gameOverMsg != null) gameOverReason = if (checkGameOver(board) != null) matedReason(board) else R.string.reason_rules
             }
             if (move != null && screen == "game" && board === searchBoard) {
                 playedFrom.getOrPut(positionKey) { mutableSetOf() }.add(move.toUci())
@@ -548,14 +557,18 @@ fun GameScreen() {
                 board = nb; lastMove = move; moveHistory = moveHistory + move
                 lastMoveText = text; moveBanner = text; bannerTick++
                 positionHistory = positionHistory + nb.toFen()
-                if (move.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
-                else { sounds.playMove(); vibrate(context) }
                 val mated = checkGameOver(board)
                 gameOverMsg = mated ?: result.messageRes.takeUnless { transientFailure }
+                val callCheck = gameOverMsg == null && board.isInCheck(board.currentPlayer)
+                // 吃子又将军时只报「将军」，两句一起报会叠在一处听不清，见 onTap。
+                if (move.isCapture()) { sounds.playCapture(); if (!callCheck) sounds.sayCapture(); vibrateDouble(context) }
+                else { sounds.playMove(); vibrate(context) }
                 if (gameOverMsg != null) {
                     gameOverReason = if (mated != null) matedReason(board) else R.string.reason_rules
+                    // 棋已经下完，不能再挂着「轻点重试」：那一下只会叫 aiMove，而它见终局就直接返回。
+                    retryNeeded = false
                     vibrate(context, 100)
-                } else if (board.isInCheck(board.currentPlayer)) { sounds.sayCheck(); vibrateDouble(context) }
+                } else if (callCheck) { sounds.sayCheck(); vibrateDouble(context) }
             }
         }, finished = { aiThinking = false })
     }
@@ -599,11 +612,14 @@ fun GameScreen() {
             lastMoveText = text; moveBanner = text; bannerTick++
             positionHistory = positionHistory + nb.toFen()
             selectedPos = null; legalMoves = emptyList(); moveCount++
-            if (moveToMake.isCapture()) { sounds.playCapture(); sounds.sayCapture(); vibrateDouble(context) }
-            else { sounds.playMove(); vibrate(context) }
             gameOverMsg = checkGameOver(board)
+            // 吃子又将军时只报「将军」。音效池只有两路，落子声、「吃」、「将军」三样一齐响，
+            // 落子声被挤掉，剩下两句人声叠在一处听不清。将军是更要紧的那一句。
+            val callCheck = gameOverMsg == null && board.isInCheck(board.currentPlayer)
+            if (moveToMake.isCapture()) { sounds.playCapture(); if (!callCheck) sounds.sayCapture(); vibrateDouble(context) }
+            else { sounds.playMove(); vibrate(context) }
             if (gameOverMsg != null) { gameOverReason = matedReason(board); vibrate(context, 100) } else {
-                if (board.isInCheck(board.currentPlayer)) sounds.sayCheck()
+                if (callCheck) sounds.sayCheck()
                 aiMove()
             }
             return
@@ -758,6 +774,7 @@ fun GameScreen() {
             else -> stringResource(R.string.status_your_move)
         }
         BackHandler(enabled = over != null && !resultDismissed) { resultDismissed = true }
+        val sheetShowing = over != null && !resultDismissed && !showMenu
         Box(Modifier.fillMaxSize()) {
             // Board layer
             BoardCanvas(
@@ -766,7 +783,7 @@ fun GameScreen() {
                 pauseMsg = if (retryNeeded) stringResource(R.string.engine_retry) else null,
                 gameOver = over != null,
                 cursorPos = cursorPos, pickingDestination = selectedPos != null,
-                menuShowing = showMenu,
+                overlayShowing = showMenu || showHelp || sheetShowing,
                 captured = capturedPieces,
                 flipped = playerColor == PieceColor.BLACK,
                 playerColor = playerColor,
@@ -803,7 +820,7 @@ fun GameScreen() {
                 )
             }
             // 终局页：谁赢了、为什么，再来一局或者看棋盘。看棋盘之后点一下棋盘它又回来。
-            if (over != null && !resultDismissed && !showMenu) {
+            if (over != null && sheetShowing) {
                 val youWon = (over == R.string.result_red_wins && playerColor == PieceColor.RED) ||
                     (over == R.string.result_black_wins && playerColor == PieceColor.BLACK)
                 GameOverSheet(
@@ -1188,7 +1205,8 @@ private fun BoardCanvas(
     gameOver: Boolean,
     cursorPos: Position?,
     pickingDestination: Boolean,
-    menuShowing: Boolean,
+    /** 菜单、说明、终局页任一盖在棋盘上。它们各自会把焦点抢走。 */
+    overlayShowing: Boolean,
     captured: List<Piece>,
     flipped: Boolean,
     playerColor: PieceColor,
@@ -1204,8 +1222,11 @@ private fun BoardCanvas(
 ) {
     // 表冠事件要有焦点才收得到。菜单打开时焦点会被菜单抢走，关掉之后必须抢回来，
     // 否则棋盘上的表冠就此失灵，而且只有开过一次菜单的人才会碰到，最难查。
+    // 说明和终局页也一样会抢：带焦点的那一层一撤掉，焦点就落空了，不会自己回到棋盘上。
+    // 原先只盯着菜单，于是第一局自动弹出的说明一点掉、终局页点「再来一局」，表冠都转不动。
+    // 所以盯的是「有没有任何一层盖着」，三层轮换（从菜单点进说明、开着菜单时终局）不算撤掉。
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(menuShowing) { if (!menuShowing) focusRequester.requestFocus() }
+    LaunchedEffect(overlayShowing) { if (!overlayShowing) focusRequester.requestFocus() }
 
     // 棋盘上的字是直接画在画布上的，不是 Compose 的 Text，所以不会自己跟随系统字号，
     // 也不会自己换行。2026-09-22 Play 以「Wear font size」退回 vc10 指的就是这件事。

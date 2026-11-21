@@ -49,6 +49,52 @@ class MoveNotationTest {
         assertEquals("前车平五", zh(up, blackHorse, across, Position(2, 2) to Position(0, 1), Position(8, 8) to Position(8, 4)))
     }
 
+    /** Notation of [from] to [to] on a board holding only [pieces], with [side] to move. */
+    private fun on(side: PieceColor, vararg pieces: Piece, from: Position, to: Position, chinese: Boolean): String {
+        val board = Board.createFromPieces(pieces.toList(), side)
+        val move = board.getAllLegalMoves().first { it.from == from && it.to == to }
+        return moveNotation(board, move, chinese)
+    }
+    private fun p(type: PieceType, color: PieceColor, row: Int, col: Int) = Piece(type, color, Position(row, col))
+
+    @Test fun advisorsOnOneFileKeepTheirFileNumber() {
+        // 两仕同在六路：前一个只能退，后一个只能进，照纵线号记，不写前后。
+        val pieces = arrayOf(
+            p(PieceType.GENERAL, PieceColor.RED, 9, 4),
+            p(PieceType.ADVISOR, PieceColor.RED, 7, 3),
+            p(PieceType.ADVISOR, PieceColor.RED, 9, 3),
+            p(PieceType.GENERAL, PieceColor.BLACK, 0, 5),
+        )
+        val front = Position(7, 3); val rear = Position(9, 3); val centre = Position(8, 4)
+        assertEquals("仕六退五", on(PieceColor.RED, *pieces, from = front, to = centre, chinese = true))
+        assertEquals("仕六进五", on(PieceColor.RED, *pieces, from = rear, to = centre, chinese = true))
+        assertEquals("A6-5", on(PieceColor.RED, *pieces, from = front, to = centre, chinese = false))
+        assertEquals("A6+5", on(PieceColor.RED, *pieces, from = rear, to = centre, chinese = false))
+    }
+
+    @Test fun elephantsOnOneFileKeepTheirFileNumberForBothSides() {
+        val red = arrayOf(
+            p(PieceType.GENERAL, PieceColor.RED, 9, 4),
+            p(PieceType.ELEPHANT, PieceColor.RED, 5, 2),
+            p(PieceType.ELEPHANT, PieceColor.RED, 9, 2),
+            p(PieceType.GENERAL, PieceColor.BLACK, 0, 3),
+        )
+        assertEquals("相七退五", on(PieceColor.RED, *red, from = Position(5, 2), to = Position(7, 4), chinese = true))
+        assertEquals("相七进五", on(PieceColor.RED, *red, from = Position(9, 2), to = Position(7, 4), chinese = true))
+        assertEquals("E7-5", on(PieceColor.RED, *red, from = Position(5, 2), to = Position(7, 4), chinese = false))
+
+        // 黑方的前一枚是行号大的那枚，纵线从黑方右手（盘面左边）数起。
+        val black = arrayOf(
+            p(PieceType.GENERAL, PieceColor.BLACK, 0, 4),
+            p(PieceType.ELEPHANT, PieceColor.BLACK, 4, 2),
+            p(PieceType.ELEPHANT, PieceColor.BLACK, 0, 2),
+            p(PieceType.GENERAL, PieceColor.RED, 9, 3),
+        )
+        assertEquals("象3退5", on(PieceColor.BLACK, *black, from = Position(4, 2), to = Position(2, 4), chinese = true))
+        assertEquals("象3进5", on(PieceColor.BLACK, *black, from = Position(0, 2), to = Position(2, 4), chinese = true))
+        assertEquals("E3+5", on(PieceColor.BLACK, *black, from = Position(0, 2), to = Position(2, 4), chinese = false))
+    }
+
     @Test fun englishUsesTheWxfLetters() {
         assertEquals("C2=5", en(redCannonCentre))
         assertEquals("H2+3", en(redCannonCentre, blackHorse))

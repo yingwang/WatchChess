@@ -42,7 +42,10 @@ class FairyEngine(private val context: Context) {
 
     // ── 启停 ────────────────────────────────────────────────────────────────
 
-    /** 启动并初始化引擎。失败时返回 false 并把原因记在 lastError 里，调用方应回落到内置引擎。 */
+    /**
+     * 启动并初始化引擎。失败时返回 false 并把原因记在 lastError 里。
+     * 界面那边这时改由内置引擎下棋，只在本地判将死与困毙，长将、长捉与重复不判（见 settleVerdict）。
+     */
     suspend fun start(): Boolean = runInterruptible(Dispatchers.IO) {
         if (isRunning) return@runInterruptible true
         try {

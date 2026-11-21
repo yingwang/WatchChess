@@ -12,7 +12,7 @@ import kotlin.math.abs
  * 中文用传统纵线记谱：红方用汉字数目（炮二平五），黑方用阿拉伯数字（马2进3）；纵线从各自
  * 的右手边数起，所以红方的一路在棋盘右边、黑方的 1 路在棋盘左边。车炮兵帅将直走时，进退
  * 后面跟走的步数；马相士斜走时跟落点的纵线。同一纵线上有两枚同样的子，用前后代替纵线号，
- * 三枚用前中后。
+ * 三枚用前中后；仕相除外，它们照纵线号记。
  *
  * 英文用世界象棋联合会那套（WXF）：字母记子，+ - = 记进退平，前后用 + - 作前缀。
  *
@@ -27,6 +27,9 @@ internal fun moveNotation(before: Board, move: Move, chinese: Boolean): String {
         .filter { it.type == piece.type && it.color == piece.color && it.position.col == move.from.col }
         .sortedBy { if (red) it.position.row else -it.position.row } // 前面的先
     val rank = onSameFile.indexOfFirst { it.position == move.from }
+    // 仕相同在一条纵线上不分前后：能退的必是前一个，能进的必是后一个，照纵线号记就分得开。
+    // WXF 也是这个规矩。所以这两种子一律按一枚算。
+    val tandem = if (piece.type == PieceType.ADVISOR || piece.type == PieceType.ELEPHANT) 1 else onSameFile.size
 
     val dRow = move.to.row - move.from.row
     val forward = if (red) dRow < 0 else dRow > 0
@@ -36,7 +39,7 @@ internal fun moveNotation(before: Board, move: Move, chinese: Boolean): String {
     return if (chinese) {
         val digits = if (red) "一二三四五六七八九" else "123456789"
         val name = pieceName(piece.type, red)
-        val head = when (onSameFile.size) {
+        val head = when (tandem) {
             0, 1 -> name + digits[file(move.from.col) - 1]
             2 -> (if (rank == 0) "前" else "后") + name
             3 -> "前中后"[rank] + name
@@ -49,7 +52,7 @@ internal fun moveNotation(before: Board, move: Move, chinese: Boolean): String {
             PieceType.GENERAL -> "K"; PieceType.ADVISOR -> "A"; PieceType.ELEPHANT -> "E"; PieceType.HORSE -> "H"
             PieceType.CHARIOT -> "R"; PieceType.CANNON -> "C"; PieceType.SOLDIER -> "P"
         }
-        val head = when (onSameFile.size) {
+        val head = when (tandem) {
             0, 1 -> letter + file(move.from.col)
             2 -> (if (rank == 0) "+" else "-") + letter
             else -> "${rank + 1}$letter"

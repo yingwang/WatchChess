@@ -25,6 +25,13 @@ class ChessAI(
     private var nodesSearched = 0
     private var startTime = 0L
     private var shouldStop = false
+    // 停不停每隔 STOP_CHECK_NODES 个结点看一次，静态搜索的结点也算在内。原先只在 alphaBeta
+    // 里撞上 2048 的整倍数才看，表上一秒才一百多个结点，一等就是十几秒，还常常整个错过。
+    private var nextStopCheck = 0
+    // 第一层搜完之前不按时限停，否则时限给得紧的档位会一着都拿不出来。
+    private var haveResult = false
+    // 调用方取消时这里也要停。搜索本身不挂起，只能自己去看外面那个协程还在不在。
+    private var job: Job? = null
 
     // Killer moves: 2 per depth level (sized for maxDepth + check extensions + quiescence)
     private val killerMoves = Array(50) { arrayOfNulls<Move>(2) }
@@ -41,12 +48,16 @@ class ChessAI(
         private const val FUTILITY_MARGIN_DEPTH1 = 200
         private const val FUTILITY_MARGIN_DEPTH2 = 400
         private const val CHECK_EXTENSION = 1
+        private const val STOP_CHECK_NODES = 64
     }
 
     suspend fun findBestMove(board: Board, moveHistory: List<Move> = emptyList()): Move? = withContext(Dispatchers.Default) {
         nodesSearched = 0
         startTime = System.currentTimeMillis()
         shouldStop = false
+        nextStopCheck = STOP_CHECK_NODES
+        haveResult = false
+        job = coroutineContext[Job]
         for (i in killerMoves.indices) killerMoves[i].fill(null)
         // Decay history table instead of clearing (preserves knowledge)
         for (c in historyTable.indices) for (f in historyTable[c].indices) for (t in historyTable[c][f].indices) {
@@ -88,6 +99,7 @@ class ChessAI(
             if (result != null && !shouldStop) {
                 bestMove = result.first
                 bestScore = result.second
+                haveResult = true
 
                 val elapsed = System.currentTimeMillis() - startTime
                 println("Depth $depth: score=$bestScore, nodes=$nodesSearched, time=${elapsed}ms")
@@ -100,7 +112,18 @@ class ChessAI(
             }
         }
 
+        // 被取消的搜索不交出半截结果。
+        ensureActive()
         bestMove
+    }
+
+    private fun pollStop() {
+        if (nodesSearched < nextStopCheck) return
+        nextStopCheck = nodesSearched + STOP_CHECK_NODES
+        if (job?.isActive == false ||
+            (haveResult && System.currentTimeMillis() - startTime > timeLimit)) {
+            shouldStop = true
+        }
     }
 
     private fun searchRoot(board: Board, depth: Int, alpha: Int, beta: Int): Pair<Move, Int>? {
@@ -149,12 +172,7 @@ class ChessAI(
         allowNullMove: Boolean
     ): Int {
         nodesSearched++
-
-        if (nodesSearched % 2048 == 0) {
-            if (System.currentTimeMillis() - startTime > timeLimit) {
-                shouldStop = true
-            }
-        }
+        pollStop()
         if (shouldStop) return 0
 
         // Transposition table lookup
@@ -248,7 +266,7 @@ class ChessAI(
                         updateKillerMoves(effectiveDepth, move)
                         updateHistory(move, effectiveDepth)
                     }
-                    transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.LOWER_BOUND, bestMove)
+                    if (!shouldStop) transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.LOWER_BOUND, bestMove)
                     return bestScore
                 }
             }
@@ -283,13 +301,14 @@ class ChessAI(
                         updateKillerMoves(effectiveDepth, move)
                         updateHistory(move, effectiveDepth)
                     }
-                    transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.UPPER_BOUND, bestMove)
+                    if (!shouldStop) transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.UPPER_BOUND, bestMove)
                     return bestScore
                 }
             }
         }
 
-        transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.EXACT, bestMove)
+        // 中途停下的那一截分数是半成品（循环可能一着都没走完），存进置换表会带到下一步棋去。
+        if (!shouldStop) transpositionTable.store(hash, effectiveDepth, bestScore, TranspositionTable.EntryType.EXACT, bestMove)
         return bestScore
     }
 
@@ -298,6 +317,8 @@ class ChessAI(
         maximizing: Boolean, depth: Int
     ): Int {
         nodesSearched++
+        pollStop()
+        if (shouldStop) return 0
         if (depth == 0) return Evaluator.evaluate(board)
 
         val standPat = Evaluator.evaluate(board)
